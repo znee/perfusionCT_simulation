@@ -1,15 +1,23 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // Check if numeric.js is loaded
+    if (typeof numeric === 'undefined') {
+        console.error('CRITICAL ERROR: numeric.js library not loaded! Deconvolution will fail.');
+        alert('Error: numeric.js library not loaded. Please refresh the page.');
+    }
+
     // --- Constants & State ---
     const state = {
         cbf: 50,
-        mtt: 4,
+        mtt: 6,
         tmax: 0,
         aifWidth: 1.0,
         noise: 0,
+        deconvMode: 'insensitive', // 'sensitive' or 'insensitive'
         model: 'exponential', // 'boxcar' or 'exponential' - exponential is default
         timePoints: 60, // 60 seconds
         dt: 1, // 1 second resolution
-        cardiacOutput: 5.0 // L/min - affects AIF/VOF amplitude
+        cardiacOutput: 5.0, // L/min - affects AIF/VOF amplitude
+        lambda: 0.05 // Deconvolution regularization parameter
     };
 
     // --- DOM Elements ---
@@ -27,6 +35,23 @@ document.addEventListener('DOMContentLoaded', () => {
     const cardiacOutputValue = document.getElementById('cardiacOutputValue');
     const noiseSlider = document.getElementById('noiseSlider');
     const noiseValue = document.getElementById('noiseValue');
+    const lambdaSlider = document.getElementById('lambdaSlider');
+    const lambdaValue = document.getElementById('lambdaValue');
+    const deconvModeSelect = document.getElementById('deconvModeSelect');
+
+    // Comparison table elements
+    const cbfOriginal = document.getElementById('cbfOriginal');
+    const cbvOriginal = document.getElementById('cbvOriginal');
+    const tmaxOriginal = document.getElementById('tmaxOriginal');
+    const mttOriginal = document.getElementById('mttOriginal');
+    const cbfDeconv = document.getElementById('cbfDeconv');
+    const cbvDeconv = document.getElementById('cbvDeconv');
+    const tmaxDeconv = document.getElementById('tmaxDeconv');
+    const mttDeconv = document.getElementById('mttDeconv');
+    const cbfError = document.getElementById('cbfError');
+    const cbvError = document.getElementById('cbvError');
+    const tmaxError = document.getElementById('tmaxError');
+    const mttError = document.getElementById('mttError');
 
     // --- Chart Instances ---
     let aifChart, residueChart, tissueChart;
@@ -146,15 +171,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 const interpolatedAIF = (1 - frac) * aif[k] + frac * aif[k1];
                 sum += interpolatedAIF * residue[i - j];
             }
-            // Unit conversion: CBF (ml/100g/min) / 60 = (ml/100g/sec)
-            // Multiply by dt to get proper integration
-            // 
-            // 0.1 scaling factor rationale (physiological):
-            // 1. Extraction fraction (E): Only ~30-50% of contrast enters tissue from blood
-            // 2. Hematocrit correction: AIF measured in whole blood (~45% hematocrit),
-            //    but tissue enhancement is from plasma only
-            // 3. Partial volume effects and tissue heterogeneity
-            // Combined effect: ~0.1 brings tissue to realistic 20-60 HU range
             result[i] = (cbf / 60) * dt * sum * 0.1;
         }
         return result;
@@ -195,28 +211,36 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Shifted IRF for visualization (shows effective IRF in tissue with Tmax delay)
-    function generateShiftedIRF(irfData, tmax, dt) {
-        const delayIndex = Math.floor(tmax / dt);
-        const shifted = new Array(irfData.length).fill(0);
-        for (let i = delayIndex; i < irfData.length; i++) {
-            shifted[i] = irfData[i - delayIndex];
+    // Shifted Residue Function for Forward Model
+    // Applies Tmax delay directly to the residue function R(t)
+    function generateShiftedResidue(residue, tmax, dt) {
+        const n = residue.length;
+        const result = new Array(n).fill(0);
+
+        // Fractional delay support via linear interpolation
+        const shifted = tmax / dt;
+        const i0 = Math.floor(shifted);
+        const frac = shifted - i0;
+
+        for (let i = 0; i < n; i++) {
+            // R_shifted[i] = R[i - delay]
+            // Interpolate between i - i0 and i - i0 - 1
+            const k = i - i0;
+            const k1 = k - 1;
+
+            let val = 0;
+            if (k >= 0 && k < n) val += (1 - frac) * residue[k];
+            if (k1 >= 0 && k1 < n) val += frac * residue[k1];
+
+            result[i] = val;
         }
-        return shifted;
+        return result;
     }
 
-    // Simulated Recovered IRF with Noise Artifacts
-    // Deconvolution is ill-posed. Noise in C_t(t) leads to oscillations in R(t).
-    function generateRecoveredIRF(irfData, noiseLevel) {
-        if (noiseLevel === 0) return irfData;
-
-        // Add high-frequency oscillations
-        return irfData.map((val, i) => {
-            // Oscillations are often larger at the beginning or edges
-            const oscillation = Math.sin(i * 1.5) * (noiseLevel * 2);
-            // Also add random noise
-            const random = (Math.random() - 0.5) * (noiseLevel * 2);
-            return val + oscillation + random;
-        });
+    // Shifted IRF for visualization (shows effective IRF in tissue with Tmax delay)
+    function generateShiftedIRF(irfData, tmax, dt) {
+        // Reuse the shifted residue logic but for IRF
+        return generateShiftedResidue(irfData, tmax, dt);
     }
 
     function addNoise(data, noiseLevel) {
@@ -226,6 +250,135 @@ document.addEventListener('DOMContentLoaded', () => {
             const noise = (Math.random() - 0.5) * 2 * (noiseLevel / 100) * maxVal;
             return Math.max(0, val + noise);
         });
+    }
+
+    // --- Deconvolution Functions ---
+
+    // Build Toeplitz matrix from AIF for convolution operation
+    // Each row represents the AIF shifted by one time step
+    function buildToeplitzMatrix(aif) {
+        const n = aif.length;
+        const matrix = [];
+        for (let i = 0; i < n; i++) {
+            const row = new Array(n).fill(0);
+            for (let j = 0; j <= i; j++) {
+                row[j] = aif[i - j];
+            }
+            matrix.push(row);
+        }
+        return matrix;
+    }
+
+    // Build Block-Circulant Matrix for Delay-Insensitive Deconvolution
+    // Lower triangle: standard Toeplitz (causal)
+    // Upper triangle: wraps from lower-left (allows IRF shift beyond window)
+    function buildCirculantMatrix(aif) {
+        const N = aif.length;
+        const matrix = [];
+
+        for (let i = 0; i < N; i++) {
+            const row = new Array(N).fill(0);
+            for (let j = 0; j < N; j++) {
+                if (j <= i) {
+                    // Lower triangle: standard Toeplitz convolution
+                    row[j] = aif[i - j];
+                } else {
+                    // Upper triangle: wrap (allows delayed IRF to be recovered)
+                    row[j] = aif[i - j + N];
+                }
+            }
+            matrix.push(row);
+        }
+
+        return matrix;
+    }
+
+    // SVD-based deconvolution with Tikhonov regularization
+    // Solves: C_t(t) = A  * R(t) where A is Toeplitz or Circulant matrix from AIF
+    // Returns: Deconvolved IRF (scaled residue function)
+    function deconvolveSVD(tissueCurve, aif, dt, lambda, mode) {
+        try {
+            // Choose matrix construction based on mode
+            let A;
+            if (mode === 'insensitive') {
+                A = buildCirculantMatrix(aif);
+            } else {
+                // Default to standard Toeplitz (sensitive to delay)
+                A = buildToeplitzMatrix(aif);
+            }
+
+            // Scale tissue curve and matrix by CBF conversion factor and dt
+            // This reverses the scaling in convolve(): (cbf/60) * dt * 0.1
+            // We want to recover CBF * R(t) where CBF is in ml/100g/min
+            // Tissue = (CBF/60) * dt * 0.1 * (A * R)
+            // Tissue = (CBF * R) * (dt * 0.1 / 60) * A
+            // Let x = CBF * R (what we want)
+            // Tissue = (Tissue * 60) / (dt * 0.1 * A)
+            // So we scale tissue by 60 / (dt * 0.1)
+            const scaleFactor = (dt * 0.1) / 60;
+            const b = tissueCurve.map(val => val / scaleFactor);
+
+            // Perform SVD using numeric.js: A = U * S * V^T
+            const svd = numeric.svd(A);
+            const U = svd.U;
+            const S = svd.S; // Singular values (1D array)
+            const V = svd.V;
+
+            // Tikhonov regularization: invert singular values with pure Tikhonov damping
+            // S_inv[i] = S[i] / (S[i]^2 + (lambda * maxS)^2)
+            const maxS = Math.max(...S);
+            const threshold = lambda * maxS; // Relative threshold
+
+            const S_inv = S.map(s => {
+                // Pure Tikhonov regularization (no hard truncation)
+                return s / (s * s + threshold * threshold);
+            });
+
+            // Reconstruct solution: R = V * S_inv * U^T * b
+            // Step 1: U^T * b
+            const UtB = numeric.dot(numeric.transpose(U), b);
+
+            // Step 2: S_inv * (U^T * b) - element-wise multiplication
+            const S_invUtB = UtB.map((val, i) => val * S_inv[i]);
+
+            // Step 3: V * (S_inv * U^T * b)
+            const deconvolved = numeric.dot(V, S_invUtB);
+
+            // Ensure non-negative and handle numerical artifacts
+            return deconvolved.map(val => Math.max(0, val));
+
+        } catch (error) {
+            console.error('Deconvolution error:', error);
+            // Return zeros if deconvolution fails
+            return new Array(tissueCurve.length).fill(0);
+        }
+    }
+
+    // Extract perfusion parameters from deconvolved IRF
+    // Returns: { cbf, cbv, tmax, mtt }
+    function deriveParametersFromDeconvolution(deconvolvedIRF, dt) {
+        // CBF: Peak value of deconvolved IRF (in ml/100g/min)
+        const cbf_deconv = Math.max(...deconvolvedIRF);
+
+        // Find time to peak (Tmax) in seconds
+        const peakIndex = deconvolvedIRF.indexOf(cbf_deconv);
+        const tmax_deconv = peakIndex * dt;
+
+        // CBV: Area under IRF curve (integral of IRF with unit conversion)
+        // IRF units: ml/100g/min, so divide by 60 to get ml/100g/sec, then multiply by dt
+        const cbv_deconv = deconvolvedIRF.reduce((sum, val) => sum + val, 0) * dt / 60;
+
+        // MTT: Central Volume Theorem - MTT = CBV / CBF
+        // CBV is in ml/100g, CBF is in ml/100g/min
+        // MTT = (CBV * 60) / CBF to get seconds
+        const mtt_deconv = cbf_deconv > 0 ? (cbv_deconv * 60) / cbf_deconv : 0;
+
+        return {
+            cbf: cbf_deconv,
+            cbv: cbv_deconv,
+            tmax: tmax_deconv,
+            mtt: mtt_deconv
+        };
     }
 
     // --- Annotation Plugin ---
@@ -446,7 +599,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     borderWidth: 2,
                     fill: false,
                     stepped: true,
-                    order: 3
+                    order: 4
                 }, {
                     label: 'Shifted IRF (with Tmax)',
                     data: [],
@@ -455,15 +608,17 @@ document.addEventListener('DOMContentLoaded', () => {
                     borderWidth: 2,
                     fill: true,
                     stepped: true,
-                    order: 2
+                    order: 3
                 }, {
-                    label: 'Recovered IRF (Noisy)',
+                    label: 'Deconvolved IRF',
                     data: [],
-                    borderColor: '#e57373',
-                    borderWidth: 1,
+                    borderColor: '#f59e0b',
+                    backgroundColor: 'transparent',
+                    borderWidth: 3,
                     pointRadius: 0,
                     fill: false,
-                    tension: 0.1
+                    tension: 0.2,
+                    order: 1
                 }]
             },
             options: {
@@ -527,6 +682,7 @@ document.addEventListener('DOMContentLoaded', () => {
         state.tmax = parseFloat(tmaxSlider.value);
         state.cardiacOutput = parseFloat(cardiacOutputSlider.value);
         state.noise = parseFloat(noiseSlider.value);
+        state.lambda = parseFloat(lambdaSlider.value);
         state.model = modelSelect.value;
 
         // Update UI Text
@@ -536,6 +692,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tmaxValue.textContent = state.tmax;
         cardiacOutputValue.textContent = state.cardiacOutput;
         noiseValue.textContent = state.noise;
+        lambdaValue.textContent = state.lambda.toFixed(2);
 
         // Calculate CBV = CBF * MTT / 60 (if CBF is per min and MTT in sec)
         // Usually CBV is ml/100g. CBF is ml/100g/min. MTT is sec.
@@ -552,43 +709,93 @@ document.addEventListener('DOMContentLoaded', () => {
         // IRF Data (no delay in function, tmax handled in convolution)
         const irfData = generateIRF(timeSteps, state.cbf, state.mtt, state.model);
         const shiftedIrfData = generateShiftedIRF(irfData, state.tmax, state.dt);
-        // Apply noise to shifted IRF (represents what deconvolution recovers)
-        const recoveredIrfData = generateRecoveredIRF(shiftedIrfData, state.noise);
 
         // Calculate VOF = AIF ⊗ h(t) - Auto mass-conservative
         const vofData = convolveForVOF(aifData, transportData, state.dt);
 
         // Convolve for Tissue (with tmax as AIF shift)
-        let tissueData = convolve(aifData, residueData, state.cbf, state.dt, state.tmax);
+        const tissueDataRaw = convolve(aifData, residueData, state.cbf, state.dt, state.tmax);
+        const tissueData = addNoise(tissueDataRaw, state.noise);
+
+        // Perform Deconvolution on (potentially noisy) tissue data
+        const aifForDeconv = addNoise(aifData, state.noise);
+        const deconvolvedIRF = deconvolveSVD(tissueData, aifForDeconv, state.dt, state.lambda, state.deconvMode);
+
+        // Derive parameters from deconvolution
+        const deconvParams = deriveParametersFromDeconvolution(deconvolvedIRF, state.dt);
+
+        // Update ground truth (original) parameters in table
+        cbfOriginal.textContent = state.cbf.toFixed(1);
+        cbvOriginal.textContent = cbv.toFixed(2);
+        tmaxOriginal.textContent = state.tmax.toFixed(1);
+        mttOriginal.textContent = state.mtt.toFixed(1);
+
+        // Update deconvolved parameters in table
+        cbfDeconv.textContent = deconvParams.cbf.toFixed(1);
+        cbvDeconv.textContent = deconvParams.cbv.toFixed(2);
+        tmaxDeconv.textContent = deconvParams.tmax.toFixed(1);
+        mttDeconv.textContent = deconvParams.mtt.toFixed(1);
+
+        // Calculate and display errors
+        const cbfErrorPct = ((Math.abs(deconvParams.cbf - state.cbf) / state.cbf) * 100).toFixed(1);
+        const cbvErrorPct = ((Math.abs(deconvParams.cbv - cbv) / cbv) * 100).toFixed(1);
+        const tmaxErrorAbs = Math.abs(deconvParams.tmax - state.tmax).toFixed(1);
+        const mttErrorPct = ((Math.abs(deconvParams.mtt - state.mtt) / state.mtt) * 100).toFixed(1);
+
+        cbfError.textContent = `${cbfErrorPct}%`;
+        cbvError.textContent = `${cbvErrorPct}%`;
+        tmaxError.textContent = `${tmaxErrorAbs}s`;
+        mttError.textContent = `${mttErrorPct}%`;
+
+        // Color-code errors (green if < 10%, yellow if < 25%, red if >= 25%)
+        // For badges, we set the background color and ensure text is white/readable
+        const getBadgeColor = (val, threshold1, threshold2) => {
+            return val < threshold1 ? 'rgba(129, 199, 132, 0.2)' : val < threshold2 ? 'rgba(255, 183, 77, 0.2)' : 'rgba(229, 115, 115, 0.2)';
+        };
+
+        const getTextColor = (val, threshold1, threshold2) => {
+            return val < threshold1 ? '#81c784' : val < threshold2 ? '#ffb74d' : '#e57373';
+        };
+
+        cbfError.style.backgroundColor = getBadgeColor(parseFloat(cbfErrorPct), 10, 25);
+        cbfError.style.color = getTextColor(parseFloat(cbfErrorPct), 10, 25);
+
+        cbvError.style.backgroundColor = getBadgeColor(parseFloat(cbvErrorPct), 10, 25);
+        cbvError.style.color = getTextColor(parseFloat(cbvErrorPct), 10, 25);
+
+        tmaxError.style.backgroundColor = getBadgeColor(parseFloat(tmaxErrorAbs), 0.5, 1.0);
+        tmaxError.style.color = getTextColor(parseFloat(tmaxErrorAbs), 0.5, 1.0);
+
+        mttError.style.backgroundColor = getBadgeColor(parseFloat(mttErrorPct), 10, 25);
+        mttError.style.color = getTextColor(parseFloat(mttErrorPct), 10, 25);
 
         // Fix 7: CBV numeric verification (with unit conversion)
         // IRF has units of CBF (ml/100g/min), so divide by 60 for ml/100g/sec
         const computedCBV = irfData.reduce((sum, val) => sum + val, 0) * state.dt / 60;
         const theoreticalCBV = (state.cbf / 60) * state.mtt;
-        console.log(`CBV numeric: ${computedCBV.toFixed(2)}, theoretical: ${theoreticalCBV.toFixed(2)}, error: ${((Math.abs(computedCBV - theoreticalCBV) / theoreticalCBV) * 100).toFixed(1)}%`);
+        // console.log(`CBV numeric: ${computedCBV.toFixed(2)}, theoretical: ${theoreticalCBV.toFixed(2)}, error: ${((Math.abs(computedCBV - theoreticalCBV) / theoreticalCBV) * 100).toFixed(1)}%`);
 
-        // Debug: Log first few values to check if data is generated
-        console.log('AIF first 5:', aifData.slice(0, 5));
-        console.log('Residue first 5:', residueData.slice(0, 5));
-        console.log('IRF first 5:', irfData.slice(0, 5));
-        console.log('Tissue first 5:', tissueData.slice(0, 5));
-
-        // Add Noise
-        let noisyAIF = aifData;
-        if (state.noise > 0) {
-            tissueData = addNoise(tissueData, state.noise);
-            noisyAIF = addNoise(aifData, state.noise);
-        }
+        // Debug: Log deconvolution results
+        // console.log('Deconvolution Results:', {
+        //     original: { cbf: state.cbf, cbv: cbv.toFixed(2), tmax: state.tmax, mtt: state.mtt },
+        //     deconvolved: deconvParams,
+        //     errors: {
+        //         cbf: ((Math.abs(deconvParams.cbf - state.cbf) / state.cbf) * 100).toFixed(1) + '%',
+        //         cbv: ((Math.abs(deconvParams.cbv - cbv) / cbv) * 100).toFixed(1) + '%',
+        //         tmax: Math.abs(deconvParams.tmax - state.tmax).toFixed(1) + 's',
+        //         mtt: ((Math.abs(deconvParams.mtt - state.mtt) / state.mtt) * 100).toFixed(1) + '%'
+        //     }
+        // });
 
         // Update Charts
         aifChart.data.datasets[0].data = aifData;
-        aifChart.data.datasets[1].data = noisyAIF;
+        aifChart.data.datasets[1].data = aifForDeconv;
         aifChart.data.datasets[2].data = vofData;
         aifChart.update();
 
         residueChart.data.datasets[0].data = irfData;
         residueChart.data.datasets[1].data = shiftedIrfData;
-        residueChart.data.datasets[2].data = recoveredIrfData;
+        residueChart.data.datasets[2].data = deconvolvedIRF; // Deconvolved IRF
         // Update stepped property based on model
         residueChart.data.datasets[0].stepped = state.model === 'boxcar';
         residueChart.data.datasets[1].stepped = state.model === 'boxcar';
@@ -622,9 +829,20 @@ document.addEventListener('DOMContentLoaded', () => {
     tmaxSlider.addEventListener('input', updateHandler);
     cardiacOutputSlider.addEventListener('input', updateHandler);
     modelSelect.addEventListener('change', updateSimulation);
+    deconvModeSelect.addEventListener('change', (e) => {
+        state.deconvMode = e.target.value;
+        updateSimulation();
+    });
     noiseSlider.addEventListener('input', updateHandler);
+    lambdaSlider.addEventListener('input', updateHandler);
 
     // --- Initialization ---
     initCharts();
+    // Initial simulation update
     updateSimulation();
+
+    // Trigger MathJax typeset if available
+    if (typeof MathJax !== 'undefined' && MathJax.typeset) {
+        MathJax.typeset();
+    }
 });

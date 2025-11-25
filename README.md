@@ -6,9 +6,10 @@ Interactive educational tool for visualizing CT perfusion physics and hemodynami
 
 - **Real-time Visualization**: Interactive sliders for CBF, MTT, Tmax, cardiac output, and noise
 - **Physiologically Accurate**: Implements proper convolution mathematics with realistic HU values
+- **SVD Deconvolution**: Recovers perfusion parameters from tissue curves using Tikhonov regularization
 - **Multiple Models**: Boxcar (plug flow) and Exponential (perfect mixing) residue functions
 - **Educational Annotations**: Visual markers for CBF, MTT, Tmax, and CBV on IRF chart
-- **Noise Simulation**: Demonstrates deconvolution artifacts from noisy tissue data
+- **Noise Simulation**: Demonstrates deconvolution artifacts and regularization effects
 
 ## Quick Start
 
@@ -127,6 +128,85 @@ This brings tissue concentration to the **realistic 20-60 HU range** for typical
 - R(t) = exp(-t/MTT) for t ≥ 0
 - Transport: (1/τ) × exp(-t/τ) where τ = MTT
 
+## Deconvolution Feature
+
+### Overview
+The simulation implements **SVD-based deconvolution with Tikhonov regularization** to recover perfusion parameters from the tissue concentration curve, mirroring real-world clinical CT perfusion analysis.
+
+### Algorithm: Block-Circulant SVD
+
+**Forward Problem (Convolution)**:
+```
+C_t(t) = CBF · [AIF(t) ⊗ R(t)]
+```
+
+**Inverse Problem (Deconvolution)**:
+```
+R(t) = deconv(C_t(t), AIF(t))
+```
+
+**Implementation Steps**:
+1. Build Toeplitz matrix A from AIF
+2. Perform Singular Value Decomposition: A = U Σ V^T
+3. Apply Tikhonov regularization to singular values:
+   ```
+   S_inv[i] = S[i] / (S[i]² + λ²·max(S)²)
+   ```
+4. Reconstruct solution: R = V · S_inv · U^T · b
+
+### Deconvolution Modes
+
+The tool offers two modes to demonstrate the impact of arterial delay (Tmax) on parameter estimation:
+
+1.  **Delay-Sensitive (Standard SVD)**:
+    - Uses a standard Toeplitz matrix constructed from the AIF.
+    - **Behavior**: If Tmax > 0, the tissue curve is shifted relative to the AIF. Standard SVD interprets this shift as dispersion, leading to an **underestimation of CBF** and overestimation of MTT.
+    - **Educational Value**: Demonstrates why delay correction is critical in perfusion analysis.
+
+2.  **Delay-Insensitive (Block-Circulant)**:
+    - Uses a block-circulant matrix (assuming periodic boundary conditions).
+    - **Behavior**: The circular structure allows the IRF to shift in time without penalty. It correctly recovers the true CBF height regardless of Tmax delay.
+    - **Educational Value**: Represents modern "delay-insensitive" or "oscillatory" SVD algorithms used in clinical software.
+
+### Regularization Parameter (λ)
+
+**Purpose**: Balances noise suppression vs. accuracy
+
+- **λ = 0.0**: No regularization → sensitive to noise, oscillations
+- **λ = 0.05** (default): Optimal for moderate noise
+- **λ = 0.2**: Heavy smoothing → may lose detail
+
+**Effect**: Higher λ truncates small singular values, reducing high-frequency artifacts but potentially underestimating peaks.
+
+### Parameter Derivation
+
+From deconvolved IRF, the following perfusion parameters are extracted:
+
+1. **CBF (Cerebral Blood Flow)**:
+   - Peak value of deconvolved IRF
+   - Units: ml/100g/min
+
+2. **Tmax (Time to Peak)**:
+   - Time at which IRF reaches maximum
+   - Units: seconds
+
+3. **CBV (Cerebral Blood Volume)**:
+   - Area under IRF curve
+   - ∫IRF(t)·dt with unit conversion (divide by 60)
+   - Units: ml/100g
+
+4. **MTT (Mean Transit Time)**:
+   - Central Volume Theorem: MTT = (CBV × 60) / CBF
+   - Units: seconds
+
+### Educational Value
+
+The deconvolution feature demonstrates:
+- **Ill-posed inverse problem**: Small noise → large oscillations in solution
+- **Regularization trade-offs**: Smoothness vs. accuracy
+- **Parameter estimation**: How clinical software derives CBF, CBV, MTT, Tmax
+- **Real-world workflow**: Comparison between ground truth and recovered parameters
+
 ## Chart Details
 
 ### AIF Chart (0-70s)
@@ -137,7 +217,7 @@ This brings tissue concentration to the **realistic 20-60 HU range** for typical
 ### IRF Chart (0-70s)
 - **Ideal IRF** (dashed light teal): Canonical CBF×R(t) at t=0
 - **Shifted IRF** (solid dark teal): Response delayed by Tmax
-- **Recovered IRF** (thin red): Noisy deconvolution result
+- **Deconvolved IRF** (orange): Recovered from tissue curve via SVD deconvolution
 
 ### Tissue Chart (0-70s)
 - **Tissue Curve** (yellow): Convolution result with realistic HU (20-60 range)

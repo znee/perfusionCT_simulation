@@ -43,7 +43,7 @@
                             MTT (Mean Transit Time)
                             <span class="value-display" id="mttValue">4</span> <span class="unit">sec</span>
                         </label>
-                        <input type="range" id="mttSlider" min="1" max="10" value="4" step="0.1">
+                        <input type="range" id="mttSlider" min="1" max="10" value="6" step="0.1">
                     </div>
 
                     <div class="slider-container">
@@ -51,7 +51,7 @@
                             Tmax (Delay)
                             <span class="value-display" id="tmaxValue">0</span> <span class="unit">sec</span>
                         </label>
-                        <input type="range" id="tmaxSlider" min="0" max="10" value="0" step="0.5">
+                        <input type="range" id="tmaxSlider" min="0" max="15" value="0" step="0.5">
                     </div>
 
                     <div class="slider-container">
@@ -93,13 +93,38 @@
                     </div>
                 </div>
 
+                <div class="control-group">
+                    <h2>Deconvolution Settings</h2>
+
+                    <div class="slider-container">
+                        <label for="deconvModeSelect">Deconvolution Mode</label>
+                        <select id="deconvModeSelect"
+                            style="width: 100%; padding: 8px; background: #333; color: #fff; border: 1px solid #444; border-radius: 4px;">
+                            <option value="sensitive">Delay-Sensitive (Standard SVD)</option>
+                            <option value="insensitive" selected>Delay-Insensitive (Block-Circulant)</option>
+                        </select>
+                        <p style="font-size: 0.75rem; color: #888; margin-top: 4px;">
+                            Sensitive: Tmax causes underestimation.<br>
+                            Insensitive: Corrects for Tmax delay.
+                        </p>
+                    </div>
+
+                    <div class="slider-container">
+                        <label for="lambdaSlider">Regularization Gamma (λ) <span id="lambdaValue"
+                                class="value-display">0.05</span></label>
+                        <input type="range" id="lambdaSlider" min="0" max="0.2" value="0.05" step="0.01">
+                        <p style="font-size: 0.75rem; color: #888; margin-top: 4px;">
+                            Controls smoothing strength.<br>
+                            Formula: S / (S² + (λ·S_max)²)
+                        </p>
+                    </div>
+                </div>
+
                 <div class="explanation">
                     <h3>Concept</h3>
-                    <p><strong>Convolution:</strong> The tissue concentration curve $C_t(t)$ is the convolution of the
-                        Arterial Input Function (AIF) and the Residue Function $R(t)$, scaled by CBF.</p>
-                    <div class="formula">
-                        $$C_t(t) = CBF \cdot [AIF(t) \otimes R(t)]$$
-                    </div>
+                    <p><strong>Forward Problem (Convolution):</strong> $C_t(t) = CBF \cdot [AIF(t) \otimes R(t)]$</p>
+                    <p><strong>Inverse Problem (Deconvolution):</strong> $R(t) = \text{deconv}(C_t(t), AIF(t))$</p>
+                    <p style="font-size: 0.85rem; margin-top: 8px;">Derive CBF, CBV, MTT from deconvolved $R(t)$</p>
                 </div>
             </aside>
 
@@ -126,11 +151,52 @@
 
                 <div class="chart-card large">
                     <div class="chart-header">
-                        <h3>Impulse Response Function (IRF)</h3>
+                        <h3>Impulse Response Function: Original vs Deconvolved</h3>
                         <span class="badge residue-badge">CBF · R(t)</span>
                     </div>
+
                     <div class="canvas-container">
                         <canvas id="residueChart"></canvas>
+                    </div>
+
+                    <!-- Parameter Comparison Table -->
+                    <div style="padding: 10px 20px 20px 20px;">
+                        <table class="comparison-table">
+                            <thead>
+                                <tr>
+                                    <th>Parameter</th>
+                                    <th>Ground Truth</th>
+                                    <th>Deconvolved</th>
+                                    <th>Error</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>CBF</td>
+                                    <td><span id="cbfOriginal">50.0</span> ml/100g/min</td>
+                                    <td><span id="cbfDeconv">--</span> ml/100g/min</td>
+                                    <td><span id="cbfError" class="error-badge">--</span></td>
+                                </tr>
+                                <tr>
+                                    <td>CBV</td>
+                                    <td><span id="cbvOriginal">3.33</span> ml/100g</td>
+                                    <td><span id="cbvDeconv">--</span> ml/100g</td>
+                                    <td><span id="cbvError" class="error-badge">--</span></td>
+                                </tr>
+                                <tr>
+                                    <td>Tmax</td>
+                                    <td><span id="tmaxOriginal">0.0</span> sec</td>
+                                    <td><span id="tmaxDeconv">--</span> sec</td>
+                                    <td><span id="tmaxError" class="error-badge">--</span></td>
+                                </tr>
+                                <tr>
+                                    <td>MTT</td>
+                                    <td><span id="mttOriginal">6.0</span> sec</td>
+                                    <td><span id="mttDeconv">--</span> sec</td>
+                                    <td><span id="mttError" class="error-badge">--</span></td>
+                                </tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </section>
@@ -141,10 +207,28 @@
         </footer>
     </div>
 
-    <!-- MathJax for formula rendering -->
-    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <!-- Load numeric.js library FIRST for SVD deconvolution -->
+    <script src="numeric.min.js"></script>
+
+    <!-- Load our main script AFTER numeric.js is available -->
+    <script src="script.js?v=11"></script>
+
+    <!-- MathJax Configuration -->
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['$', '$'], ['\\(', '\\)']]
+            },
+            svg: {
+                fontCache: 'global'
+            },
+            startup: {
+                typeset: true
+            }
+        };
+    </script>
+    <!-- MathJax for formula rendering (loaded last to avoid conflicts) -->
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
-    <script src="script.js"></script>
 </body>
 
 </html>

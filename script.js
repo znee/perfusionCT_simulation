@@ -148,9 +148,14 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             // Unit conversion: CBF (ml/100g/min) / 60 = (ml/100g/sec)
             // Multiply by dt to get proper integration
-            // 0.3 factor: empirical adjustment for realistic tissue HU (30-60 range)
-            // (accounts for extraction fraction and tissue distribution)
-            result[i] = (cbf / 60) * dt * sum * 0.3;
+            // 
+            // 0.1 scaling factor rationale (physiological):
+            // 1. Extraction fraction (E): Only ~30-50% of contrast enters tissue from blood
+            // 2. Hematocrit correction: AIF measured in whole blood (~45% hematocrit),
+            //    but tissue enhancement is from plasma only
+            // 3. Partial volume effects and tissue heterogeneity
+            // Combined effect: ~0.1 brings tissue to realistic 20-60 HU range
+            result[i] = (cbf / 60) * dt * sum * 0.1;
         }
         return result;
     }

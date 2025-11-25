@@ -6,7 +6,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tmax: 0,
         aifWidth: 1.0,
         noise: 0,
-        model: 'boxcar', // 'boxcar' or 'exponential'
+        model: 'exponential', // 'boxcar' or 'exponential' - exponential is default
         timePoints: 60, // 60 seconds
         dt: 1, // 1 second resolution
         cardiacOutput: 5.0 // L/min - affects AIF/VOF amplitude
@@ -53,127 +53,114 @@ document.addEventListener('DOMContentLoaded', () => {
         return Math.pow(z - 1, z - 1) * Math.exp(-(z - 1));
     }
 
-    // Gamma-variate function for AIF
+    // Gamma-variate function for AIF - CALIBRATED to 150-250 HU
     // C(t) = K * (t - t0)^alpha * exp(-(t - t0)/beta)
-    // Low cardiac output causes delay, dispersion, and lower peak
     function generateAIF(timeSteps, widthScale, cardiacOutput = 5.0) {
-        // Cardiac output effects:
-        // High CO (>5) = Earlier arrival, sharper peak, higher amplitude
-        // Low CO (<5) = Delayed arrival, wider/flatter curve, lower peak
-
         const normalCO = 5.0;
         const coRatio = cardiacOutput / normalCO;
 
         // 1. Arrival time: Lower CO = delayed arrival
         const baseArrival = 5;
-        const t0 = baseArrival + (normalCO - cardiacOutput) * 0.5; // Delay with low CO
+        const t0 = baseArrival + (normalCO - cardiacOutput) * 0.5;
 
-        // 2. Shape: Lower CO = more dispersion (higher beta)
+        // 2. Shape parameters
         const alpha = 3.0;
         const baseBeta = 1.5 * widthScale;
-        const beta = baseBeta * (2.0 - coRatio * 0.3); // Wider with low CO
+        const beta = baseBeta * (2.0 - coRatio * 0.3);
 
-        // 3. Amplitude: Higher CO = higher peak (better delivery)
-        // Realistic AIF peak should be around 100-300 HU
-        const baseAmplitude = 3.5; // Reduced for realistic HU values
-        const K = baseAmplitude * Math.sqrt(coRatio) / Math.pow(widthScale, alpha);
-
-        return timeSteps.map(t => {
+        // 3. Fix 4: Systematic calibration to target peak HU
+        // Generate raw AIF, find max, scale to target
+        const rawAIF = timeSteps.map(t => {
             if (t < t0) return 0;
             const dt = t - t0;
-            return K * Math.pow(dt, alpha) * Math.exp(-dt / beta);
+            return Math.pow(dt, alpha) * Math.exp(-dt / beta);
         });
+
+        const rawMax = Math.max(...rawAIF);
+        const targetPeakHU = 200; // Clinical range: 150-300 HU
+        const scaleFactor = targetPeakHU / rawMax;
+
+        return rawAIF.map(val => val * scaleFactor * Math.sqrt(coRatio));
     }
 
-    // Transport Function h(t) - CORRECTED for conservation of mass
-    // Describes distribution of transit times without normalizing by 1/MTT
-    // The area under h(t) represents the fraction that exits at each time point
+    // Transport Function h(t) - Mass-conservative
+    // Describes distribution of transit times
+    // Normalized to integrate to 1 (dt applied in convolution)
     function generateTransport(timeSteps, mtt, delay, model) {
-        const dt = 1; // 1 second intervals
-
         return timeSteps.map(t => {
             if (t < delay) return 0;
 
             if (model === 'boxcar') {
-                // For boxcar: all blood exits at exactly t = delay + mtt
-                // Use a narrow Gaussian to approximate delta function
+                // Delta function approximation at t = delay + mtt
+                // Gaussian normalized to area = 1 (no dt here)
                 const transitTime = delay + mtt;
-                const sigma = 0.5; // Width of approximation
+                const sigma = Math.max(0.7 * 1, 0.5); // sigma >= 0.7*dt for stable discrete area
                 const diff = t - transitTime;
-                // Gaussian approximation of delta function, normalized to preserve area
                 return (1 / (sigma * Math.sqrt(2 * Math.PI))) *
-                    Math.exp(-0.5 * Math.pow(diff / sigma, 2)) * dt;
+                    Math.exp(-0.5 * Math.pow(diff / sigma, 2));
             } else if (model === 'exponential') {
-                // Simplified exponential model to avoid mathematical issues
+                // Exponential with proper normalization: (1/τ) * exp(-x/τ)
                 const x = t - delay;
                 if (x <= 0) return 0;
 
-                // Simple exponential decay with time constant = MTT
-                const tau = Math.max(1, mtt); // Ensure positive time constant
-                const expCoeff = Math.exp(-x / tau);
-
-                // Protect against invalid values
-                if (!isFinite(expCoeff) || isNaN(expCoeff)) {
-                    return 0;
-                }
-
-                return expCoeff;
+                const tau = Math.max(1, mtt);
+                return (1 / tau) * Math.exp(-x / tau); // Added 1/tau normalization
             }
             return 0;
         });
     }
 
-    // Residue Function R(t)
-    // Boxcar: R(t) = 1 for delay <= t < delay + MTT
-    // Exponential: R(t) = exp(-(t - delay) / MTT) for t >= delay
-    function generateResidue(timeSteps, mtt, delay, model) {
+    // Residue Function R(t) - CANONICAL (no delay)
+    // R(0) = 1 for both models (correct for deconvolution teaching)
+    // Delay is handled by shifting AIF in convolution
+    function generateResidue(timeSteps, mtt, model) {
         return timeSteps.map(t => {
-            if (t < delay) return 0;
-
             if (model === 'boxcar') {
-                if (t >= delay && t < delay + mtt) return 1;
-                return 0;
+                return (t >= 0 && t < mtt) ? 1 : 0;
             } else if (model === 'exponential') {
-                const expVal = Math.exp(-(t - delay) / mtt);
-                // Protect against invalid values
-                if (!isFinite(expVal) || isNaN(expVal)) return 0;
-                return expVal;
+                return (t >= 0) ? Math.exp(-t / mtt) : 0;
             }
             return 0;
         });
     }
 
-    // Convolution for tissue concentration
+    // Convolution for tissue concentration with AIF delay shift
     // Ct(t) = CBF * (AIF * R)(t) * dt
-    // Discrete convolution: (f * g)[n] = sum(f[m] * g[n-m])
-    function convolve(aif, residue, cbf, dt) {
+    // Tmax applied as AIF shift (arterial-tissue delay) with fractional interpolation
+    // Units: CBF (ml/100g/min) needs conversion to (ml/100g/sec)
+    function convolve(aif, residue, cbf, dt, tmax) {
         const n = aif.length;
         const result = new Array(n).fill(0);
+
+        // Fractional delay support via linear interpolation
+        const shifted = tmax / dt;
+        const i0 = Math.floor(shifted);
+        const frac = shifted - i0;
 
         for (let i = 0; i < n; i++) {
             let sum = 0;
             for (let j = 0; j <= i; j++) {
-                sum += aif[j] * residue[i - j];
+                // Interpolated AIF for fractional delay
+                const k = Math.max(0, j - i0);
+                const k1 = Math.max(0, k - 1);
+                const interpolatedAIF = (1 - frac) * aif[k] + frac * aif[k1];
+                sum += interpolatedAIF * residue[i - j];
             }
-            // Scale by CBF and dt
-            // Note: CBF is usually in ml/100g/min. We need to be careful with units.
-            // Here we treat CBF as a relative scalar for visualization.
-            // If AIF is HU, Residue is unitless, result is HU.
-            // CBF scaling: The standard equation is Ct(t) = CBF * conv(AIF, R).
-            // Realistic tissue concentration should be 20-100 HU
-            result[i] = sum * cbf * 0.001; // Reduced scaling for realistic tissue HU
+            // Unit conversion: CBF (ml/100g/min) / 60 = (ml/100g/sec)
+            // Multiply by dt to get proper integration
+            // 0.1 factor: empirical adjustment for realistic tissue HU
+            // (accounts for extraction fraction and tissue distribution)
+            result[i] = (cbf / 60) * dt * sum * 0.1;
         }
         return result;
     }
 
-    // Convolution for VOF - preserves conservation of mass
+    // Convolution for VOF - Auto mass-conservative with normalized h(t)
     // VOF(t) = AIF(t) ⊗ h(t) where h(t) is transport function
-    // Total area of VOF should equal total area of AIF (mass conservation)
     function convolveForVOF(aif, transport, dt) {
         const n = aif.length;
         const result = new Array(n).fill(0);
 
-        // Standard convolution
         for (let i = 0; i < n; i++) {
             let sum = 0;
             for (let j = 0; j <= i; j++) {
@@ -182,22 +169,34 @@ document.addEventListener('DOMContentLoaded', () => {
             result[i] = sum * dt;
         }
 
-        // Normalize to preserve total area (conservation of mass)
-        const aifArea = aif.reduce((sum, val) => sum + val, 0) * dt;
-        const vofArea = result.reduce((sum, val) => sum + val, 0);
+        // Fix 6: Optional normalization (only if >1% error)
+        const aifArea = aif.reduce((s, v) => s + v, 0) * dt;
+        const vofArea = result.reduce((s, v) => s + v, 0);
 
-        if (vofArea > 0) {
-            const normalizationFactor = aifArea / vofArea;
-            return result.map(val => val * normalizationFactor);
+        if (Math.abs(vofArea - aifArea) / aifArea > 0.01) {
+            // Apply correction only if > 1% error
+            const factor = aifArea / vofArea;
+            return result.map(val => val * factor);
         }
 
         return result;
     }
 
     // Impulse Response Function IRF(t) = CBF * R(t)
-    function generateIRF(timeSteps, cbf, mtt, delay, model) {
-        const residue = generateResidue(timeSteps, mtt, delay, model);
-        return residue.map(r => r * cbf * 0.5); // Scale down for better visualization
+    // Fix 5: No arbitrary scaling - literal CBF × R(t)
+    function generateIRF(timeSteps, cbf, mtt, model) {
+        const residue = generateResidue(timeSteps, mtt, model);
+        return residue.map(r => r * cbf);
+    }
+
+    // Shifted IRF for visualization (shows effective IRF in tissue with Tmax delay)
+    function generateShiftedIRF(irfData, tmax, dt) {
+        const delayIndex = Math.floor(tmax / dt);
+        const shifted = new Array(irfData.length).fill(0);
+        for (let i = delayIndex; i < irfData.length; i++) {
+            shifted[i] = irfData[i - delayIndex];
+        }
+        return shifted;
     }
 
     // Simulated Recovered IRF with Noise Artifacts
@@ -244,9 +243,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 ctx.textAlign = 'center';
 
                 // 1. CBF Arrow (Height)
-                const scaledCBF = cbf * 0.5; // Match the IRF scaling
+                // IRF = CBF × R(t), so height is literally CBF
                 const xCBF = xAxis.getPixelForValue(tmax + 0.5);
-                const yCBFTop = yAxis.getPixelForValue(scaledCBF);
+                const yCBFTop = yAxis.getPixelForValue(cbf); // Literal CBF height
                 const yCBFBottom = yAxis.getPixelForValue(0);
 
                 // Draw Arrow
@@ -265,10 +264,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 ctx.fillText('CBF', xCBF, yCBFTop - 5);
 
                 // 2. Tmax (Delay)
+                // Note: IRF is canonical (no delay), but Tmax represents
+                // the arterial-tissue delay applied in convolution
                 if (tmax > 0) {
                     const xStart = xAxis.getPixelForValue(0);
                     const xEnd = xAxis.getPixelForValue(tmax);
-                    const yPos = yAxis.getPixelForValue(scaledCBF / 2); // Mid-height
+                    const yPos = yAxis.getPixelForValue(cbf / 2); // Mid-height
 
                     ctx.beginPath();
                     ctx.moveTo(xStart, yPos);
@@ -287,7 +288,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 // 3. MTT (Width or Decay)
-                const yMTT = yAxis.getPixelForValue(scaledCBF * 0.8);
+                const yMTT = yAxis.getPixelForValue(cbf * 0.8);
                 const xMTTStart = xAxis.getPixelForValue(tmax);
                 const xMTTEnd = xAxis.getPixelForValue(tmax + mtt);
 
@@ -308,7 +309,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 // 4. CBV (Area)
                 const xArea = xAxis.getPixelForValue(tmax + mtt / 2);
-                const yArea = yAxis.getPixelForValue(scaledCBF * 0.4);
+                const yArea = yAxis.getPixelForValue(cbf * 0.4);
                 ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
                 ctx.fillText('Area = CBV', xArea, yArea);
 
@@ -414,7 +415,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 },
                 scales: {
                     ...commonOptions.scales,
-                    x: { ...commonOptions.scales.x, max: 50 }, // Extended to 50s
+                    x: { ...commonOptions.scales.x, max: 70 }, // Extended to 70s
                     y: {
                         ...commonOptions.scales.y,
                         min: 0,
@@ -434,11 +435,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 datasets: [{
                     label: 'Ideal IRF (CBF*R)',
                     data: [],
+                    borderColor: '#95e1d3',
+                    borderDash: [5, 5],
+                    backgroundColor: 'transparent',
+                    borderWidth: 2,
+                    fill: false,
+                    stepped: true,
+                    order: 3
+                }, {
+                    label: 'Shifted IRF (with Tmax)',
+                    data: [],
                     borderColor: '#4ecdc4',
                     backgroundColor: 'rgba(78, 205, 196, 0.1)',
                     borderWidth: 2,
                     fill: true,
-                    stepped: true
+                    stepped: true,
+                    order: 2
                 }, {
                     label: 'Recovered IRF (Noisy)',
                     data: [],
@@ -463,7 +475,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         max: undefined, // Auto-scale for IRF
                         title: { display: true, text: 'CBF × R(t)', color: '#666' }
                     },
-                    x: { ...commonOptions.scales.x, max: 50 } // Extended to 50s
+                    x: { ...commonOptions.scales.x, max: 70 } // Extended to 70s
                 }
             },
             plugins: [annotationPlugin] // Register local plugin
@@ -495,7 +507,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         max: undefined, // Auto-scale for tissue
                         title: { display: true, text: 'Tissue Concentration (HU)', color: '#666' }
                     },
-                    x: { ...commonOptions.scales.x, max: 50 } // Extended to 50s
+                    x: { ...commonOptions.scales.x, max: 70 } // Extended to 70s
                 }
             }
         });
@@ -529,19 +541,26 @@ document.addEventListener('DOMContentLoaded', () => {
         // Generate Data
         const timeSteps = Array.from({ length: state.timePoints }, (_, i) => i);
         const aifData = generateAIF(timeSteps, state.aifWidth, state.cardiacOutput);
-        const residueData = generateResidue(timeSteps, state.mtt, state.tmax, state.model);
+        const residueData = generateResidue(timeSteps, state.mtt, state.model); // No delay
         const transportData = generateTransport(timeSteps, state.mtt, state.tmax, state.model);
 
-        // IRF Data
-        const irfData = generateIRF(timeSteps, state.cbf, state.mtt, state.tmax, state.model);
-        const recoveredIrfData = generateRecoveredIRF(irfData, state.noise);
+        // IRF Data (no delay in function, tmax handled in convolution)
+        const irfData = generateIRF(timeSteps, state.cbf, state.mtt, state.model);
+        const shiftedIrfData = generateShiftedIRF(irfData, state.tmax, state.dt);
+        // Apply noise to shifted IRF (represents what deconvolution recovers)
+        const recoveredIrfData = generateRecoveredIRF(shiftedIrfData, state.noise);
 
-        // Calculate VOF = AIF ⊗ h(t) - Conservation of Mass
-        // VOF should have same total area as AIF (mass conservation)
+        // Calculate VOF = AIF ⊗ h(t) - Auto mass-conservative
         const vofData = convolveForVOF(aifData, transportData, state.dt);
 
-        // Convolve for Tissue
-        let tissueData = convolve(aifData, residueData, state.cbf, state.dt);
+        // Convolve for Tissue (with tmax as AIF shift)
+        let tissueData = convolve(aifData, residueData, state.cbf, state.dt, state.tmax);
+
+        // Fix 7: CBV numeric verification (with unit conversion)
+        // IRF has units of CBF (ml/100g/min), so divide by 60 for ml/100g/sec
+        const computedCBV = irfData.reduce((sum, val) => sum + val, 0) * state.dt / 60;
+        const theoreticalCBV = (state.cbf / 60) * state.mtt;
+        console.log(`CBV numeric: ${computedCBV.toFixed(2)}, theoretical: ${theoreticalCBV.toFixed(2)}, error: ${((Math.abs(computedCBV - theoreticalCBV) / theoreticalCBV) * 100).toFixed(1)}%`);
 
         // Debug: Log first few values to check if data is generated
         console.log('AIF first 5:', aifData.slice(0, 5));
@@ -563,9 +582,11 @@ document.addEventListener('DOMContentLoaded', () => {
         aifChart.update();
 
         residueChart.data.datasets[0].data = irfData;
-        residueChart.data.datasets[1].data = recoveredIrfData;
+        residueChart.data.datasets[1].data = shiftedIrfData;
+        residueChart.data.datasets[2].data = recoveredIrfData;
         // Update stepped property based on model
         residueChart.data.datasets[0].stepped = state.model === 'boxcar';
+        residueChart.data.datasets[1].stepped = state.model === 'boxcar';
         residueChart.update();
 
         tissueChart.data.datasets[0].data = tissueData;

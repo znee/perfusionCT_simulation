@@ -44,6 +44,8 @@ Simply open `index.html` in a web browser - no server required!
 
 Or visit the live demo: [https://znee.github.io/perfusionCT_simulation](https://znee.github.io/perfusionCT_simulation)
 
+🔄 *Note: If the live demo link shows 404, GitHub Pages may still be deploying (allow 5-10 minutes after enabling Pages)*
+
 ## Technical Details
 
 - **Pure client-side**: HTML5, CSS3, JavaScript (ES6)

@@ -59,7 +59,7 @@
                         <select id="modelSelect"
                             style="width: 100%; padding: 8px; background: #333; color: #fff; border: 1px solid #555; border-radius: 4px;">
                             <option value="boxcar">Boxcar (Plug Flow)</option>
-                            <option value="exponential">Exponential (Perfect Mixing)</option>
+                            <option value="exponential" selected>Exponential (Perfect Mixing)</option>
                         </select>
                     </div>
 
@@ -75,7 +75,8 @@
                     <div class="slider-container">
                         <label for="cardiacOutputSlider">
                             Cardiac Output
-                            <span class="value-display" id="cardiacOutputValue">5.0</span> <span class="unit">L/min</span>
+                            <span class="value-display" id="cardiacOutputValue">5.0</span> <span
+                                class="unit">L/min</span>
                         </label>
                         <input type="range" id="cardiacOutputSlider" min="2.0" max="8.0" value="5.0" step="0.2">
                     </div>

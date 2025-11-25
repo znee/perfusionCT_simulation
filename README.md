@@ -121,7 +121,7 @@ This brings tissue concentration to the **realistic 20-60 HU range** for typical
 **Canonical Residue Function**: R(0) = 1, no intrinsic delay
 - **Tmax applied to residue**: Forward model uses `R(t - Tmax)` to generate tissue curve
 - This ensures the matrix `A` (built from unshifted AIF) and the tissue curve `b` represent the same system
-- Educational: "Ideal IRF" shows canonical response, "Shifted IRF" shows delayed tissue response
+- Educational: "IRF" shows the ground truth response with Tmax delay applied
 
 **Fractional Tmax Support**: Linear interpolation for sub-second delays (e.g., 0.5s)
 
@@ -319,9 +319,9 @@ The deconvolution feature demonstrates:
 
 ### Row 2: Impulse Response Function (420px)
 **IRF deconvolution comparison:**
-- **Ideal IRF** (dashed cyan): Canonical CBF×R(t), no delay
-- **Shifted IRF** (solid cyan): With Tmax delay applied
-- **Deconvolved IRF** (orange): Recovered via SVD
+- **IRF** (solid teal, filled): Ground truth with Tmax delay applied
+- **Deconvolved IRF (no noise)** (dashed pink): Recovered via SVD without noise - shows deconvolution accuracy
+- **Deconvolved IRF** (solid orange): Recovered via SVD with noise - shows noise effect
 - **Annotations**: Visual markers for CBF (height), MTT (width), Tmax (delay), CBV (area)
 - **Time range**: 0-120 seconds
 

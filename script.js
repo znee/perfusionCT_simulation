@@ -58,6 +58,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const deconvolvedIRF = deconvolveSVD(tissueForDeconv, aifForDeconv, state.dt, state.lambda, state.deconvMode, perfusionScale);
         const deconvolvedDisplay = applyAcquisitionWindow(deconvolvedIRF, deconvolvedIRF.length, state.timePoints);
 
+        // Perform Deconvolution without noise (for comparison)
+        const tissueForDeconvClean = tissueDataRaw.slice(0, acquisitionSamples);
+        const aifForDeconvClean = aifData.slice(0, acquisitionSamples);
+        const deconvolvedIRFNoNoise = deconvolveSVD(tissueForDeconvClean, aifForDeconvClean, state.dt, state.lambda, state.deconvMode, perfusionScale);
+        const deconvolvedNoNoiseDisplay = applyAcquisitionWindow(deconvolvedIRFNoNoise, deconvolvedIRFNoNoise.length, state.timePoints);
+
         const aifObservedDisplay = applyAcquisitionWindow(aifMeasuredFull, acquisitionSamples, state.timePoints);
         const vofObservedDisplay = applyAcquisitionWindow(vofData, acquisitionSamples, state.timePoints);
 
@@ -72,8 +78,8 @@ document.addEventListener('DOMContentLoaded', () => {
             aifObservedDisplay,
             tissueObservedDisplay,
             vofObservedDisplay,
-            irfData,
             shiftedIrfData,
+            deconvolvedNoNoiseDisplay,
             deconvolvedDisplay
         });
     }

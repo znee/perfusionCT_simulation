@@ -223,17 +223,7 @@ export function initCharts() {
         data: {
             labels: timeLabels,
             datasets: [{
-                label: 'Ideal IRF (CBF*R)',
-                data: [],
-                borderColor: '#95e1d3',
-                borderDash: [5, 5],
-                backgroundColor: 'transparent',
-                borderWidth: 2,
-                fill: false,
-                stepped: true,
-                order: 4
-            }, {
-                label: 'Shifted IRF (with Tmax)',
+                label: 'IRF',
                 data: [],
                 borderColor: '#4ecdc4',
                 backgroundColor: 'rgba(78, 205, 196, 0.1)',
@@ -241,6 +231,17 @@ export function initCharts() {
                 fill: true,
                 stepped: true,
                 order: 3
+            }, {
+                label: 'Deconvolved IRF (no noise)',
+                data: [],
+                borderColor: '#ec4899',
+                borderDash: [5, 5],
+                backgroundColor: 'transparent',
+                borderWidth: 2,
+                pointRadius: 0,
+                fill: false,
+                tension: 0.2,
+                order: 2
             }, {
                 label: 'Deconvolved IRF',
                 data: [],
@@ -281,11 +282,10 @@ export function updateCharts(data) {
     flowChart.data.datasets[3].data = data.vofObservedDisplay;
     flowChart.update();
 
-    residueChart.data.datasets[0].data = data.irfData;
-    residueChart.data.datasets[1].data = data.shiftedIrfData;
-    residueChart.data.datasets[2].data = data.deconvolvedDisplay; // Deconvolved IRF (windowed)
+    residueChart.data.datasets[0].data = data.shiftedIrfData;
+    residueChart.data.datasets[1].data = data.deconvolvedNoNoiseDisplay; // Deconvolved IRF without noise
+    residueChart.data.datasets[2].data = data.deconvolvedDisplay; // Deconvolved IRF (with noise)
     // Update stepped property based on model
     residueChart.data.datasets[0].stepped = state.model === 'boxcar';
-    residueChart.data.datasets[1].stepped = state.model === 'boxcar';
     residueChart.update();
 }

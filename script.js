@@ -148,9 +148,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             // Unit conversion: CBF (ml/100g/min) / 60 = (ml/100g/sec)
             // Multiply by dt to get proper integration
-            // 0.1 factor: empirical adjustment for realistic tissue HU
+            // 0.3 factor: empirical adjustment for realistic tissue HU (30-60 range)
             // (accounts for extraction fraction and tissue distribution)
-            result[i] = (cbf / 60) * dt * sum * 0.1;
+            result[i] = (cbf / 60) * dt * sum * 0.3;
         }
         return result;
     }

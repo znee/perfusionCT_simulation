@@ -12,11 +12,30 @@ Interactive educational tool for visualizing CT perfusion physics and hemodynami
 
 ## Quick Start
 
-### Local Usage
+### Local Usage with serve.py
+
+**Why use serve.py?**
+The tool uses external resources (Chart.js, MathJax) that require a web server due to browser security (CORS) restrictions. Opening `index.html` directly in a browser won't work properly.
+
+**What is serve.py?**
+A simple Python HTTP server that:
+- Serves the application on `localhost:8000`
+- Uses ThreadingTCPServer for concurrent connections
+- Automatically opens your default browser
+- Provides read-only access (secure for presentations)
+
+**Requirements:**
+- Python 3.x (built-in, no additional packages needed)
+
+**Run:**
 ```bash
 python3 serve.py
 ```
-The app will automatically open in your browser at `http://localhost:8000`
+
+The app will automatically open at `http://localhost:8000`
+
+**Stopping the server:**
+Press `Ctrl+C` in the terminal
 
 ### GitHub Pages
 Visit the live demo at your GitHub Pages URL.

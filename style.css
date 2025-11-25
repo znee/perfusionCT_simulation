@@ -252,9 +252,9 @@ input[type="range"]::-webkit-slider-thumb:hover {
 /* Charts Section */
 .charts {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    grid-template-rows: 350px 700px;
-    gap: 5px;
+    grid-template-columns: 1fr;
+    grid-auto-rows: minmax(304px, auto);
+    gap: 15px;
     overflow-y: auto;
 }
 
@@ -271,11 +271,28 @@ input[type="range"]::-webkit-slider-thumb:hover {
     grid-column: 1 / -1;
 }
 
+.chart-card.full-row {
+    min-height: 304px;
+}
+
 .chart-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
     margin-bottom: 10px;
+}
+
+.badge-group {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.chart-description {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin: 0 0 8px 0;
 }
 
 .chart-header h3 {

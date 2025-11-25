@@ -9,7 +9,9 @@ Interactive educational tool for visualizing CT perfusion physics and hemodynami
 - **SVD Deconvolution**: Recovers perfusion parameters from tissue curves using Tikhonov regularization
 - **Multiple Models**: Boxcar (plug flow) and Exponential (perfect mixing) residue functions
 - **Educational Annotations**: Visual markers for CBF, MTT, Tmax, and CBV on IRF chart
-- **Noise Simulation**: Demonstrates deconvolution artifacts and regularization effects
+- **Realistic Noise Models**: Gaussian (electronics) and Poisson (photon counting) noise
+- **Scan Duration Control**: Variable acquisition window (0-120s) to study truncation effects
+- **VOF Visualization**: Venous output function shows systemic circulation timing
 
 ## Quick Start
 
@@ -59,6 +61,14 @@ Visit the live demo at: **https://znee.github.io/perfusionCT_simulation/**
 ### Cardiac Output
 - Range: 2-8 L/min
 - Affects AIF timing, width, and amplitude
+
+### Scan Duration
+- Range: 0-120 seconds
+- Controls acquisition window (truncation)
+- Shows "effective window" in real-time
+- **Educational Value**: Demonstrates impact of short scans on deconvolution accuracy
+  - Short scans: Miss bolus tail → delay-sensitive bias
+  - Long scans: Better parameter recovery, especially with Tmax > 0
 
 ## Mathematical Implementation
 
@@ -117,6 +127,11 @@ This brings tissue concentration to the **realistic 20-60 HU range** for typical
 
 **Mass Conservation**: VOF normalized to preserve AIF area (within 1% error tolerance)
 
+**VOF Timing**: Venous output peaks at `Tmax + MTT + systemic_delay`
+- Boxcar: Delta function at total transit time
+- Exponential: Gamma distribution peaks at mean transit time
+- Systemic delay varies inversely with cardiac output (2-12s range)
+
 **CBV Verification**: Console logs numeric ∫IRF·dt vs theoretical (CBF/60)×MTT
 
 ## Model Types
@@ -129,7 +144,9 @@ This brings tissue concentration to the **realistic 20-60 HU range** for typical
 ### Exponential (Perfect Mixing)
 - Assumes instantaneous mixing in tissue compartment
 - R(t) = exp(-t/MTT) for t ≥ 0
-- Transport: (1/τ) × exp(-t/τ) where τ = MTT
+- Transport: Gamma-variate distribution (shape=2) peaks at delay + MTT
+  - Formula: `h(t) = (x/τ²) × exp(-x/τ)` where x = t - delay
+  - Ensures physiologically correct VOF timing
 
 ## Deconvolution Feature
 
@@ -197,6 +214,68 @@ The tool offers two modes to demonstrate the impact of arterial delay (Tmax) on 
 - **λ = 0.05** (default): Optimal for moderate noise
 - **λ = 0.2**: Heavy smoothing → may lose detail
 
+## Noise Models
+
+The simulation implements two noise models representing different physical sources in CT imaging:
+
+### Gaussian Noise (Electronics)
+**Source**: Scanner electronics, readout circuits, analog-to-digital conversion
+
+**Characteristics**:
+- Constant variance across signal range
+- Independent of signal intensity
+- Additive: `signal_noisy = signal + N(0, σ²)`
+
+**Formula**:
+```javascript
+noise = gaussianRandom() × maxSignal × (noiseLevel/100)
+```
+
+**Use Case**: Simulates electronic noise in high-dose CT where photon statistics are not limiting
+
+---
+
+### Poisson Noise (Photon Counting)
+**Source**: Quantum nature of X-ray photon detection
+
+**Characteristics**:
+- Signal-dependent variance: σ² ∝ signal
+- Models photon counting statistics
+- More realistic for CT perfusion imaging
+
+**Physics Implementation**:
+```javascript
+basePhotonCount = 10^5 photons/pixel (typical CT)
+attenuationFactor = 1 + |HU|/1000
+effectivePhotons = basePhotonCount / attenuationFactor
+
+// Poisson noise: σ = √N
+noisyPhotons = Poisson(effectivePhotons)
+relativeNoise = (noisyPhotons - effectivePhotons) / √effectivePhotons
+
+// Convert to HU domain
+huNoise = relativeNoise × scaleFactor × maxSignal × (noiseLevel/100)
+```
+
+**Key Physics**:
+1. **Higher attenuation → fewer photons**: Dense tissue (high HU) transmits fewer X-rays
+2. **Quantum uncertainty**: Photon count follows Poisson distribution with variance = mean
+3. **HU conversion**: Relative photon noise propagates to HU domain
+4. **Realistic magnitude**: Comparable to Gaussian but with signal-dependent character
+
+**Educational Value**:
+- Demonstrates why low-dose CT has more noise
+- Shows heterogeneous noise (higher in dense bone, contrast-enhanced vessels)
+- More realistic for CT perfusion where photon statistics dominate
+
+**Comparison**:
+| Feature | Gaussian | Poisson |
+|---------|----------|---------|
+| Variance | Constant | Signal-dependent |
+| Physical Source | Electronics | Photon statistics |
+| CT Relevance | High-dose scans | Low-dose perfusion |
+| Noise Pattern | Uniform | Heterogeneous |
+
 **Effect**: Higher λ truncates small singular values, reducing high-frequency artifacts but potentially underestimating peaks.
 
 ### Parameter Derivation
@@ -228,20 +307,29 @@ The deconvolution feature demonstrates:
 - **Parameter estimation**: How clinical software derives CBF, CBV, MTT, Tmax
 - **Real-world workflow**: Comparison between ground truth and recovered parameters
 
-## Chart Details
+## Chart Layout
 
-### AIF Chart (0-70s)
-- **Ideal AIF** (solid red): Gamma-variate, peak ~200 HU
-- **Noisy AIF** (thin red): With added noise
-- **VOF** (dashed teal): Venous output (mass-conserved)
+### Row 1: Input AIF vs Tissue & Venous Response (380px)
+**Consolidated view showing input and outputs:**
+- **AIF** (red): Arterial input function, peak ~200 HU
+- **Tissue Curve** (yellow): Convolution result, realistic 20-60 HU range
+- **VOF** (cyan): Venous output with physiological timing
+- **Time range**: 0-120 seconds
+- **Features**: 10% y-axis grace for visual spacing
 
-### IRF Chart (0-70s)
-- **Ideal IRF** (dashed light teal): Canonical CBF×R(t) at t=0
-- **Shifted IRF** (solid dark teal): Response delayed by Tmax
-- **Deconvolved IRF** (orange): Recovered from tissue curve via SVD deconvolution
+### Row 2: Impulse Response Function (420px)
+**IRF deconvolution comparison:**
+- **Ideal IRF** (dashed cyan): Canonical CBF×R(t), no delay
+- **Shifted IRF** (solid cyan): With Tmax delay applied
+- **Deconvolved IRF** (orange): Recovered via SVD
+- **Annotations**: Visual markers for CBF (height), MTT (width), Tmax (delay), CBV (area)
+- **Time range**: 0-120 seconds
 
-### Tissue Chart (0-70s)
-- **Tissue Curve** (yellow): Convolution result with realistic HU (20-60 range)
+### Row 3: Deconvolution Results Table (auto-height)
+**Parameter comparison:**
+- Ground truth vs. deconvolved values
+- Error metrics with color coding (green < 10%, yellow < 25%, red ≥ 25%)
+- Parameters: CBF, CBV, Tmax, MTT
 
 ## Technical Notes
 

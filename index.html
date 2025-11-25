@@ -85,6 +85,28 @@
                         </label>
                         <input type="range" id="noiseSlider" min="0" max="20" value="0" step="1">
                     </div>
+
+                    <div class="slider-container">
+                        <label for="noiseModelSelect">Noise Model</label>
+                        <select id="noiseModelSelect"
+                            style="width: 100%; padding: 8px; background: #333; color: #fff; border: 1px solid #444; border-radius: 4px;">
+                            <option value="gaussian">Gaussian (scanner electronics)</option>
+                            <option value="poisson" selected>Poisson (photon counting)</option>
+                        </select>
+                        <p style="font-size: 0.75rem; color: #888; margin-top: 4px;">Poisson noise adds signal-dependent
+                            variance.</p>
+                    </div>
+
+                    <div class="slider-container">
+                        <label for="scanDurationSlider">
+                            Scan Duration (Acquired Time)
+                            <span class="value-display" id="scanDurationValue">60</span> <span class="unit">sec</span>
+                        </label>
+                        <input type="range" id="scanDurationSlider" min="0" max="120" value="60" step="1">
+                        <p style="font-size: 0.75rem; color: #888; margin-top: 4px;">
+                            Effective window: <span id="scanDurationEffectiveDisplay">60</span> s
+                        </p>
+                    </div>
                 </div>
 
                 <div class="control-group">
@@ -129,27 +151,21 @@
             </aside>
 
             <section class="charts">
-                <div class="chart-card">
+                <div class="chart-card large full-row">
                     <div class="chart-header">
-                        <h3>Arterial Input Function (AIF)</h3>
-                        <span class="badge aif-badge">Input</span>
+                        <h3>Input AIF vs Tissue & Venous Response</h3>
+                        <div class="badge-group">
+                            <span class="badge aif-badge">Input (AIF)</span>
+                            <span class="badge tissue-badge">Outputs (Tissue & VOF)</span>
+                            <span class="badge residue-badge">Circular delay when delay-insensitive is active</span>
+                        </div>
                     </div>
                     <div class="canvas-container">
-                        <canvas id="aifChart"></canvas>
+                        <canvas id="flowChart"></canvas>
                     </div>
                 </div>
 
-                <div class="chart-card">
-                    <div class="chart-header">
-                        <h3>Tissue Concentration Curve C_t(t)</h3>
-                        <span class="badge tissue-badge">Output</span>
-                    </div>
-                    <div class="canvas-container">
-                        <canvas id="tissueChart"></canvas>
-                    </div>
-                </div>
-
-                <div class="chart-card large">
+                <div class="chart-card large full-row">
                     <div class="chart-header">
                         <h3>Impulse Response Function: Original vs Deconvolved</h3>
                         <span class="badge residue-badge">CBF · R(t)</span>
@@ -158,9 +174,14 @@
                     <div class="canvas-container">
                         <canvas id="residueChart"></canvas>
                     </div>
+                </div>
 
-                    <!-- Parameter Comparison Table -->
-                    <div style="padding: 10px 20px 20px 20px;">
+                <!-- Parameter Comparison Table -->
+                <div class="chart-card large table-card">
+                    <div class="chart-header">
+                        <h3>Deconvolution Results</h3>
+                    </div>
+                    <div style="padding: 0 10px 10px 10px;">
                         <table class="comparison-table">
                             <thead>
                                 <tr>
@@ -197,6 +218,11 @@
                                 </tr>
                             </tbody>
                         </table>
+                        <p style="font-size: 0.85rem; color: #ccc; margin-top: 10px;">
+                            AIF drives the system (red). Tissue curve (yellow) and venous outflow (teal) illustrate the
+                            measured response within the scan window. When “delay-insensitive” deconvolution is selected,
+                            Tmax is applied as a circular shift to match the periodic oSVD assumption.
+                        </p>
                     </div>
                 </div>
             </section>
@@ -211,7 +237,7 @@
     <script src="numeric.min.js"></script>
 
     <!-- Load our main script AFTER numeric.js is available -->
-    <script src="script.js?v=14"></script>
+    <script src="script.js"></script>
 
     <!-- MathJax Configuration -->
     <script>

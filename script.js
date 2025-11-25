@@ -14,10 +14,13 @@ document.addEventListener('DOMContentLoaded', () => {
         noise: 0,
         deconvMode: 'insensitive', // 'sensitive' or 'insensitive'
         model: 'exponential', // 'boxcar' or 'exponential' - exponential is default
-        timePoints: 60, // 60 seconds
+        timePoints: 121, // 0-120 seconds (inclusive)
         dt: 1, // 1 second resolution
         cardiacOutput: 5.0, // L/min - affects AIF/VOF amplitude
-        lambda: 0.05 // Deconvolution regularization parameter
+        lambda: 0.05, // Deconvolution regularization parameter
+        scanDuration: 60, // seconds slider
+        scanDurationEffective: 60, // actual truncated duration applied to data
+        noiseModel: 'poisson'
     };
 
     // --- DOM Elements ---
@@ -35,9 +38,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const cardiacOutputValue = document.getElementById('cardiacOutputValue');
     const noiseSlider = document.getElementById('noiseSlider');
     const noiseValue = document.getElementById('noiseValue');
+    const noiseModelSelect = document.getElementById('noiseModelSelect');
     const lambdaSlider = document.getElementById('lambdaSlider');
     const lambdaValue = document.getElementById('lambdaValue');
     const deconvModeSelect = document.getElementById('deconvModeSelect');
+    const scanDurationSlider = document.getElementById('scanDurationSlider');
+    const scanDurationValue = document.getElementById('scanDurationValue');
+    const scanDurationEffectiveDisplay = document.getElementById('scanDurationEffectiveDisplay');
 
     // Comparison table elements
     const cbfOriginal = document.getElementById('cbfOriginal');
@@ -54,7 +61,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const mttError = document.getElementById('mttError');
 
     // --- Chart Instances ---
-    let aifChart, residueChart, tissueChart;
+    let flowChart, residueChart;
 
     // --- Math Functions ---
 
@@ -111,7 +118,15 @@ document.addEventListener('DOMContentLoaded', () => {
     // Transport Function h(t) - Mass-conservative
     // Describes distribution of transit times
     // Normalized to integrate to 1 (dt applied in convolution)
-    function generateTransport(timeSteps, mtt, delay, model) {
+    function computeVofDelay(cardiacOutput) {
+        const normalCO = 5.0;
+        const baseDelay = 4.0; // seconds for normal venous transit
+        const coFactor = normalCO / Math.max(1.0, cardiacOutput);
+        const delay = baseDelay * coFactor;
+        return Math.min(12, Math.max(2, delay));
+    }
+
+    function generateTransport(timeSteps, mtt, delay, model, dt) {
         return timeSteps.map(t => {
             if (t < delay) return 0;
 
@@ -119,17 +134,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Delta function approximation at t = delay + mtt
                 // Gaussian normalized to area = 1 (no dt here)
                 const transitTime = delay + mtt;
-                const sigma = Math.max(0.7 * 1, 0.5); // sigma >= 0.7*dt for stable discrete area
+                const sigma = Math.max(0.7 * dt, 0.5); // sigma >= 0.7*dt for stable discrete area
                 const diff = t - transitTime;
                 return (1 / (sigma * Math.sqrt(2 * Math.PI))) *
                     Math.exp(-0.5 * Math.pow(diff / sigma, 2));
             } else if (model === 'exponential') {
-                // Exponential with proper normalization: (1/τ) * exp(-x/τ)
+                // Gamma-variate transport: peaks at delay + mtt
+                // Shape parameter = 2 gives realistic peaked distribution
                 const x = t - delay;
                 if (x <= 0) return 0;
 
                 const tau = Math.max(1, mtt);
-                return (1 / tau) * Math.exp(-x / tau); // Added 1/tau normalization
+                const shape = 2.0; // Shape parameter for gamma distribution
+                // Gamma PDF: (x^(k-1) * exp(-x/θ)) / (θ^k * Γ(k))
+                // For k=2: (x * exp(-x/θ)) / θ^2
+                // Peak at x = (k-1)*θ = 1*θ = mtt
+                return (x / (tau * tau)) * Math.exp(-x / tau);
             }
             return 0;
         });
@@ -137,11 +157,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Residue Function R(t) - CANONICAL (no delay)
     // R(0) = 1 for both models (correct for deconvolution teaching)
-    // Delay is handled by shifting AIF in convolution
-    function generateResidue(timeSteps, mtt, model) {
+    // Delay is handled by shifting the residue (forward model matches inverse)
+    function generateResidue(timeSteps, mtt, model, dt) {
         return timeSteps.map(t => {
             if (model === 'boxcar') {
-                return (t >= 0 && t < mtt) ? 1 : 0;
+                const remaining = mtt - t;
+                if (remaining <= 0) return 0;
+                if (remaining >= dt) return 1;
+                return remaining / dt;
             } else if (model === 'exponential') {
                 return (t >= 0) ? Math.exp(-t / mtt) : 0;
             }
@@ -149,29 +172,34 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Convolution for tissue concentration with AIF delay shift
+    // Convolution for tissue concentration with residue delay shift
     // Ct(t) = CBF * (AIF * R)(t) * dt
-    // Tmax applied as AIF shift (arterial-tissue delay) with fractional interpolation
+    // Tmax applied to the residue (arterial-tissue delay) with fractional interpolation
     // Units: CBF (ml/100g/min) needs conversion to (ml/100g/sec)
-    function convolve(aif, residue, cbf, dt, tmax) {
+    function convolve(aif, residue, cbf, dt, tmax, perfusionScale = 1, circular = false) {
         const n = aif.length;
         const result = new Array(n).fill(0);
-
-        // Fractional delay support via linear interpolation
-        const shifted = tmax / dt;
-        const i0 = Math.floor(shifted);
-        const frac = shifted - i0;
+        let delayedResidue = residue;
+        if (tmax > 0) {
+            if (circular) {
+                delayedResidue = residue.map((_, i) => {
+                    const shift = Math.floor(tmax / dt);
+                    const frac = (tmax / dt) - shift;
+                    const idx = (i - shift + n) % n;
+                    const idxPrev = (idx - 1 + n) % n;
+                    return (1 - frac) * residue[idx] + frac * residue[idxPrev];
+                });
+            } else {
+                delayedResidue = generateShiftedResidue(residue, tmax, dt);
+            }
+        }
 
         for (let i = 0; i < n; i++) {
             let sum = 0;
             for (let j = 0; j <= i; j++) {
-                // Interpolated AIF for fractional delay
-                const k = Math.max(0, j - i0);
-                const k1 = Math.max(0, k - 1);
-                const interpolatedAIF = (1 - frac) * aif[k] + frac * aif[k1];
-                sum += interpolatedAIF * residue[i - j];
+                sum += aif[j] * delayedResidue[i - j];
             }
-            result[i] = (cbf / 60) * dt * sum * 0.1;
+            result[i] = (cbf / 60) * dt * sum * 0.1 * perfusionScale;
         }
         return result;
     }
@@ -205,8 +233,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Impulse Response Function IRF(t) = CBF * R(t)
     // Fix 5: No arbitrary scaling - literal CBF × R(t)
-    function generateIRF(timeSteps, cbf, mtt, model) {
-        const residue = generateResidue(timeSteps, mtt, model);
+    function generateIRF(timeSteps, cbf, mtt, model, dt) {
+        const residue = generateResidue(timeSteps, mtt, model, dt);
         return residue.map(r => r * cbf);
     }
 
@@ -243,13 +271,85 @@ document.addEventListener('DOMContentLoaded', () => {
         return generateShiftedResidue(irfData, tmax, dt);
     }
 
-    function addNoise(data, noiseLevel) {
-        if (noiseLevel === 0) return data;
+    function gaussianRandom() {
+        let u = 0, v = 0;
+        while (u === 0) u = Math.random();
+        while (v === 0) v = Math.random();
+        return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+    }
+
+    function poissonRandom(mean) {
+        if (!Number.isFinite(mean) || mean <= 0) return 0;
+        if (mean > 50) {
+            // Normal approximation for efficiency at high means
+            return Math.max(0, Math.round(mean + Math.sqrt(mean) * gaussianRandom()));
+        }
+        const L = Math.exp(-mean);
+        let p = 1;
+        let k = 0;
+        do {
+            k++;
+            p *= Math.random();
+        } while (p > L);
+        return k - 1;
+    }
+
+    function addNoise(data, noiseLevel, model = 'gaussian') {
+        if (noiseLevel === 0) return [...data];
         const maxVal = Math.max(...data);
+        const scale = noiseLevel / 100;
+
         return data.map(val => {
-            const noise = (Math.random() - 0.5) * 2 * (noiseLevel / 100) * maxVal;
+            if (model === 'poisson') {
+                // CT Physics: Noise proportional to 1/√(photon_count)
+                // Simulate realistic photon statistics
+
+                const basePhotonCount = 100000; // Typical CT: 10^5 photons/pixel
+                const baseHU = 50; // Reference HU for normalization
+
+                // Higher HU (more attenuation) = fewer transmitted photons
+                // Approximate relationship: photons ∝ exp(-μ*x) ∝ 1/(1 + HU/1000)
+                const attenuationFactor = 1 + Math.abs(val) / 1000;
+                const effectivePhotons = basePhotonCount / attenuationFactor;
+
+                // Poisson noise in photon domain: σ = √N
+                const noisyPhotons = poissonRandom(effectivePhotons);
+                const relativeNoise = (noisyPhotons - effectivePhotons) / Math.sqrt(effectivePhotons);
+
+                // Convert to HU domain
+                // Noise in HU ≈ (ΔN/N) * sensitivity, where sensitivity relates to CT numbers
+                const huNoise = relativeNoise * (baseHU / Math.sqrt(basePhotonCount / 100)) * scale * maxVal;
+
+                return Math.max(0, val + huNoise);
+            }
+
+            // Gaussian (electronics noise - constant variance)
+            const noise = gaussianRandom() * maxVal * scale;
             return Math.max(0, val + noise);
         });
+    }
+
+    function getAcquisitionSamples(scanDuration, dt, maxPoints) {
+        const clamped = Math.max(0, scanDuration);
+        const samples = Math.floor(clamped / dt) + 1;
+        return Math.min(maxPoints, Math.max(1, samples));
+    }
+
+    function applyAcquisitionWindow(data, samples, totalLength) {
+        const output = new Array(totalLength).fill(null);
+        const limit = Math.min(totalLength, data.length);
+        for (let i = 0; i < limit; i++) {
+            if (i < samples) {
+                output[i] = data[i];
+            }
+        }
+        return output;
+    }
+
+    function getCardiacPerfusionScale(cardiacOutput) {
+        const normalCO = 5.0;
+        const ratio = Math.max(0.2, cardiacOutput / normalCO);
+        return Math.min(1.4, Math.max(0.6, Math.pow(ratio, 0.9)));
     }
 
     // --- Deconvolution Functions ---
@@ -296,7 +396,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // SVD-based deconvolution with Tikhonov regularization
     // Solves: C_t(t) = A  * R(t) where A is Toeplitz or Circulant matrix from AIF
     // Returns: Deconvolved IRF (scaled residue function)
-    function deconvolveSVD(tissueCurve, aif, dt, lambda, mode) {
+    function deconvolveSVD(tissueCurve, aif, dt, lambda, mode, perfusionScale = 1) {
         try {
             // Choose matrix construction based on mode
             let A;
@@ -315,7 +415,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Let x = CBF * R (what we want)
             // Tissue = (Tissue * 60) / (dt * 0.1 * A)
             // So we scale tissue by 60 / (dt * 0.1)
-            const scaleFactor = (dt * 0.1) / 60;
+            const scaleFactor = (dt * 0.1 * perfusionScale) / 60;
             const b = tissueCurve.map(val => val / scaleFactor);
 
             // Perform SVD using numeric.js: A = U * S * V^T
@@ -344,8 +444,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Step 3: V * (S_inv * U^T * b)
             const deconvolved = numeric.dot(V, S_invUtB);
 
-            // Ensure non-negative and handle numerical artifacts
-            return deconvolved.map(val => Math.max(0, val));
+            return deconvolved;
 
         } catch (error) {
             console.error('Deconvolution error:', error);
@@ -356,28 +455,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Extract perfusion parameters from deconvolved IRF
     // Returns: { cbf, cbv, tmax, mtt }
-    function deriveParametersFromDeconvolution(deconvolvedIRF, dt) {
-        // CBF: Peak value of deconvolved IRF (in ml/100g/min)
-        const cbf_deconv = Math.max(...deconvolvedIRF);
+    function deriveParametersFromDeconvolution(deconvolvedIRF, dt, maxTime = Infinity) {
+        if (!deconvolvedIRF.length) {
+            return { cbf: 0, cbv: 0, tmax: 0, mtt: 0 };
+        }
 
-        // Find time to peak (Tmax) in seconds
-        const peakIndex = deconvolvedIRF.indexOf(cbf_deconv);
-        const tmax_deconv = peakIndex * dt;
+        const cbfPeak = Math.max(...deconvolvedIRF);
+        if (!Number.isFinite(cbfPeak)) {
+            return { cbf: 0, cbv: 0, tmax: 0, mtt: 0 };
+        }
 
-        // CBV: Area under IRF curve (integral of IRF with unit conversion)
-        // IRF units: ml/100g/min, so divide by 60 to get ml/100g/sec, then multiply by dt
-        const cbv_deconv = deconvolvedIRF.reduce((sum, val) => sum + val, 0) * dt / 60;
+        const cbf = Math.max(0, cbfPeak);
+        const peakIndex = Math.max(0, deconvolvedIRF.indexOf(cbfPeak));
+        const rawTmax = peakIndex * dt;
+        const boundedWindow = Number.isFinite(maxTime) ? maxTime : Infinity;
+        const tmax = Math.max(0, Math.min(boundedWindow, rawTmax));
 
-        // MTT: Central Volume Theorem - MTT = CBV / CBF
-        // CBV is in ml/100g, CBF is in ml/100g/min
-        // MTT = (CBV * 60) / CBF to get seconds
-        const mtt_deconv = cbf_deconv > 0 ? (cbv_deconv * 60) / cbf_deconv : 0;
+        const cbvRaw = deconvolvedIRF.reduce((sum, val) => sum + (Number.isFinite(val) ? val : 0), 0) * dt / 60;
+        const cbv = Math.max(0, cbvRaw);
+
+        const mttRaw = cbf > 0 ? (cbv * 60) / cbf : 0;
+        const mtt = Math.max(0, Math.min(boundedWindow, mttRaw));
 
         return {
-            cbf: cbf_deconv,
-            cbv: cbv_deconv,
-            tmax: tmax_deconv,
-            mtt: mtt_deconv
+            cbf,
+            cbv,
+            tmax,
+            mtt
         };
     }
 
@@ -475,8 +579,8 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             // Handle AIF chart scan duration line (if needed)
-            if (chart.canvas.id === 'aifChart' && state.scanDuration) {
-                const xPos = xAxis.getPixelForValue(state.scanDuration);
+            if ((chart.canvas.id === 'flowChart' || chart.canvas.id === 'residueChart') && state.scanDurationEffective) {
+                const xPos = xAxis.getPixelForValue(state.scanDurationEffective);
 
                 ctx.save();
                 ctx.strokeStyle = '#ff6b6b';
@@ -491,7 +595,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Add label
                 ctx.fillStyle = '#ff6b6b';
                 ctx.font = '12px Inter';
-                ctx.fillText('Scan End', xPos + 5, yAxis.top + 20);
+                const label = chart.canvas.id === 'residueChart' ? 'Scan Window' : 'Scan End';
+                ctx.fillText(label, xPos + 5, yAxis.top + 20);
 
                 ctx.restore();
             }
@@ -527,58 +632,67 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     function initCharts() {
-        const timeLabels = Array.from({ length: state.timePoints }, (_, i) => i);
+        const timeLabels = Array.from({ length: state.timePoints }, (_, i) => i * state.dt);
 
-        // AIF Chart
-        const ctxAIF = document.getElementById('aifChart').getContext('2d');
-        aifChart = new Chart(ctxAIF, {
+        // Combined Flow Chart (AIF, Tissue, VOF)
+        const ctxFlow = document.getElementById('flowChart').getContext('2d');
+        flowChart = new Chart(ctxFlow, {
             type: 'line',
             data: {
                 labels: timeLabels,
                 datasets: [{
-                    label: 'Ideal AIF',
+                    label: 'Ideal AIF (Input)',
                     data: [],
                     borderColor: '#ff6b6b',
                     backgroundColor: 'rgba(255, 107, 107, 0.1)',
                     borderWidth: 2,
                     fill: true,
-                    tension: 0.4,
-                    order: 2
+                    tension: 0.35,
+                    order: 4
                 }, {
-                    label: 'Noisy AIF',
+                    label: 'Measured AIF',
                     data: [],
-                    borderColor: '#ff6b6b', // Same color but different style? Or maybe darker red?
-                    backgroundColor: 'transparent',
-                    borderWidth: 1,
+                    borderColor: '#ff6b6b',
+                    borderDash: [4, 3],
+                    borderWidth: 1.5,
                     pointRadius: 0,
                     fill: false,
                     tension: 0.1,
-                    order: 1 // Draw on top
-                }, {
-                    label: 'VOF (Output)',
-                    data: [],
-                    borderColor: '#4ecdc4',
-                    borderDash: [5, 5],
-                    borderWidth: 2,
-                    fill: false,
-                    tension: 0.4,
                     order: 3
+                }, {
+                    label: 'Tissue Response',
+                    data: [],
+                    borderColor: '#ffe66d',
+                    backgroundColor: 'rgba(255, 230, 109, 0.15)',
+                    borderWidth: 2.5,
+                    fill: true,
+                    tension: 0.35,
+                    order: 2
+                }, {
+                    label: 'VOF (Venous Output)',
+                    data: [],
+                    borderColor: '#1dd1a1',
+                    borderDash: [6, 4],
+                    borderWidth: 2,
+                    backgroundColor: 'transparent',
+                    fill: false,
+                    tension: 0.25,
+                    order: 1
                 }]
             },
             options: {
                 ...commonOptions,
                 plugins: {
                     ...commonOptions.plugins,
-                    title: { display: false },
-                    legend: { display: true } // Show legend for AIF/VOF
+                    legend: { display: true }
                 },
                 scales: {
                     ...commonOptions.scales,
-                    x: { ...commonOptions.scales.x, max: 70 }, // Extended to 70s
+                    x: { ...commonOptions.scales.x, max: 120 },
                     y: {
                         ...commonOptions.scales.y,
                         min: 0,
-                        max: undefined, // Auto-scale for AIF
+                        max: undefined,
                         title: { display: true, text: 'Concentration (HU)', color: '#666' }
                     }
                 }
@@ -636,42 +750,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         max: undefined, // Auto-scale for IRF
                         title: { display: true, text: 'CBF × R(t)', color: '#666' }
                     },
-                    x: { ...commonOptions.scales.x, max: 70 } // Extended to 70s
+                    x: { ...commonOptions.scales.x, max: 120 } // Extended to 120s
                 }
             },
             plugins: [annotationPlugin] // Register local plugin
         });
 
-        // Tissue Chart
-        const ctxTissue = document.getElementById('tissueChart').getContext('2d');
-        tissueChart = new Chart(ctxTissue, {
-            type: 'line',
-            data: {
-                labels: timeLabels,
-                datasets: [{
-                    label: 'Tissue Curve',
-                    data: [],
-                    borderColor: '#ffe66d',
-                    backgroundColor: 'rgba(255, 230, 109, 0.1)',
-                    borderWidth: 3,
-                    fill: true,
-                    tension: 0.4
-                }]
-            },
-            options: {
-                ...commonOptions,
-                scales: {
-                    ...commonOptions.scales,
-                    y: {
-                        ...commonOptions.scales.y,
-                        min: 0,
-                        max: undefined, // Auto-scale for tissue
-                        title: { display: true, text: 'Tissue Concentration (HU)', color: '#666' }
-                    },
-                    x: { ...commonOptions.scales.x, max: 70 } // Extended to 70s
-                }
-            }
-        });
     }
 
     // --- Update Logic ---
@@ -683,7 +767,9 @@ document.addEventListener('DOMContentLoaded', () => {
         state.tmax = parseFloat(tmaxSlider.value);
         state.cardiacOutput = parseFloat(cardiacOutputSlider.value);
         state.noise = parseFloat(noiseSlider.value);
+        state.noiseModel = noiseModelSelect.value;
         state.lambda = parseFloat(lambdaSlider.value);
+        state.scanDuration = parseFloat(scanDurationSlider.value);
         state.model = modelSelect.value;
 
         // Update UI Text
@@ -694,6 +780,7 @@ document.addEventListener('DOMContentLoaded', () => {
         cardiacOutputValue.textContent = state.cardiacOutput;
         noiseValue.textContent = state.noise;
         lambdaValue.textContent = state.lambda.toFixed(2);
+        scanDurationValue.textContent = state.scanDuration;
 
         // Calculate CBV = CBF * MTT / 60 (if CBF is per min and MTT in sec)
         // Usually CBV is ml/100g. CBF is ml/100g/min. MTT is sec.
@@ -702,28 +789,42 @@ document.addEventListener('DOMContentLoaded', () => {
         cbvValue.textContent = cbv.toFixed(2);
 
         // Generate Data
-        const timeSteps = Array.from({ length: state.timePoints }, (_, i) => i);
+        const timeSteps = Array.from({ length: state.timePoints }, (_, i) => i * state.dt);
         const aifData = generateAIF(timeSteps, state.aifWidth, state.cardiacOutput);
-        const residueData = generateResidue(timeSteps, state.mtt, state.model); // No delay
-        const transportData = generateTransport(timeSteps, state.mtt, state.tmax, state.model);
+        const residueData = generateResidue(timeSteps, state.mtt, state.model, state.dt); // No delay
+        const vofDelay = computeVofDelay(state.cardiacOutput) + state.tmax;
+        const transportData = generateTransport(timeSteps, state.mtt, vofDelay, state.model, state.dt);
 
         // IRF Data (no delay in function, tmax handled in convolution)
-        const irfData = generateIRF(timeSteps, state.cbf, state.mtt, state.model);
+        const irfData = generateIRF(timeSteps, state.cbf, state.mtt, state.model, state.dt);
         const shiftedIrfData = generateShiftedIRF(irfData, state.tmax, state.dt);
+
+        const acquisitionSamples = getAcquisitionSamples(state.scanDuration, state.dt, state.timePoints);
+        state.scanDurationEffective = (acquisitionSamples - 1) * state.dt;
+        scanDurationEffectiveDisplay.textContent = state.scanDurationEffective.toFixed(0);
 
         // Calculate VOF = AIF ⊗ h(t) - Auto mass-conservative
         const vofData = convolveForVOF(aifData, transportData, state.dt);
 
-        // Convolve for Tissue (with tmax as AIF shift)
-        const tissueDataRaw = convolve(aifData, residueData, state.cbf, state.dt, state.tmax);
-        const tissueData = addNoise(tissueDataRaw, state.noise);
+        // Convolve for Tissue (with tmax applied to residue)
+        const perfusionScale = getCardiacPerfusionScale(state.cardiacOutput);
+        const useCircularDelay = state.deconvMode === 'insensitive';
+        const tissueDataRaw = convolve(aifData, residueData, state.cbf, state.dt, state.tmax, perfusionScale, useCircularDelay);
+        const tissueMeasuredFull = addNoise(tissueDataRaw, state.noise, state.noiseModel);
+        const tissueObservedDisplay = tissueDataRaw.map((val, idx) => idx < acquisitionSamples ? tissueMeasuredFull[idx] : null);
 
         // Perform Deconvolution on (potentially noisy) tissue data
-        const aifForDeconv = addNoise(aifData, state.noise);
-        const deconvolvedIRF = deconvolveSVD(tissueData, aifForDeconv, state.dt, state.lambda, state.deconvMode);
+        const aifMeasuredFull = addNoise(aifData, state.noise, state.noiseModel);
+        const tissueForDeconv = tissueMeasuredFull.slice(0, acquisitionSamples);
+        const aifForDeconv = aifMeasuredFull.slice(0, acquisitionSamples);
+        const deconvolvedIRF = deconvolveSVD(tissueForDeconv, aifForDeconv, state.dt, state.lambda, state.deconvMode, perfusionScale);
+        const deconvolvedDisplay = applyAcquisitionWindow(deconvolvedIRF, deconvolvedIRF.length, state.timePoints);
+
+        const aifObservedDisplay = applyAcquisitionWindow(aifMeasuredFull, acquisitionSamples, state.timePoints);
+        const vofObservedDisplay = applyAcquisitionWindow(vofData, acquisitionSamples, state.timePoints);
 
         // Derive parameters from deconvolution
-        const deconvParams = deriveParametersFromDeconvolution(deconvolvedIRF, state.dt);
+        const deconvParams = deriveParametersFromDeconvolution(deconvolvedIRF, state.dt, state.scanDurationEffective);
 
         // Update ground truth (original) parameters in table
         cbfOriginal.textContent = state.cbf.toFixed(1);
@@ -789,21 +890,19 @@ document.addEventListener('DOMContentLoaded', () => {
         // });
 
         // Update Charts
-        aifChart.data.datasets[0].data = aifData;
-        aifChart.data.datasets[1].data = aifForDeconv;
-        aifChart.data.datasets[2].data = vofData;
-        aifChart.update();
+        flowChart.data.datasets[0].data = aifData;
+        flowChart.data.datasets[1].data = aifObservedDisplay;
+        flowChart.data.datasets[2].data = tissueObservedDisplay;
+        flowChart.data.datasets[3].data = vofObservedDisplay;
+        flowChart.update();
 
         residueChart.data.datasets[0].data = irfData;
         residueChart.data.datasets[1].data = shiftedIrfData;
-        residueChart.data.datasets[2].data = deconvolvedIRF; // Deconvolved IRF
+        residueChart.data.datasets[2].data = deconvolvedDisplay; // Deconvolved IRF (windowed)
         // Update stepped property based on model
         residueChart.data.datasets[0].stepped = state.model === 'boxcar';
         residueChart.data.datasets[1].stepped = state.model === 'boxcar';
         residueChart.update();
-
-        tissueChart.data.datasets[0].data = tissueData;
-        tissueChart.update();
     }
 
     // --- Debounce for better mobile performance ---
@@ -836,6 +935,8 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     noiseSlider.addEventListener('input', updateHandler);
     lambdaSlider.addEventListener('input', updateHandler);
+    noiseModelSelect.addEventListener('change', updateSimulation);
+    scanDurationSlider.addEventListener('input', updateHandler);
 
     // --- Initialization ---
     initCharts();

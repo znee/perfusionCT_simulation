@@ -242,7 +242,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const { cbf, mtt, tmax, model } = state;
 
                 ctx.save();
-                ctx.font = '12px Inter';
+                ctx.font = '16px Inter';
                 ctx.fillStyle = '#fff';
                 ctx.strokeStyle = '#fff';
                 ctx.textAlign = 'center';

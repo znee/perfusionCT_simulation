@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Perfusion CT simulation</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>Perfusion CT simulation</h1>
+            <p class="subtitle">Interactive visualization of AIF, Residue Function, and Tissue Curve</p>
+        </header>
+
+        <main class="dashboard">
+            <aside class="controls">
+                <div class="control-group">
+                    <h2>Physiological Parameters</h2>
+
+                    <div class="slider-container">
+                        <label for="cbfSlider">
+                            CBF (Cerebral Blood Flow)
+                            <span class="value-display" id="cbfValue">50</span> <span class="unit">ml/100g/min</span>
+                        </label>
+                        <input type="range" id="cbfSlider" min="10" max="100" value="50" step="1">
+                    </div>
+
+                    <div class="slider-container">
+                        <label for="aifWidthSlider">
+                            AIF Width (Sharpness)
+                            <span class="value-display" id="aifWidthValue">1.0</span>
+                        </label>
+                        <input type="range" id="aifWidthSlider" min="0.5" max="2.0" value="1.0" step="0.1">
+                    </div>
+
+                    <div class="slider-container">
+                        <label for="mttSlider">
+                            MTT (Mean Transit Time)
+                            <span class="value-display" id="mttValue">4</span> <span class="unit">sec</span>
+                        </label>
+                        <input type="range" id="mttSlider" min="1" max="10" value="4" step="0.1">
+                    </div>
+
+                    <div class="slider-container">
+                        <label for="tmaxSlider">
+                            Tmax (Delay)
+                            <span class="value-display" id="tmaxValue">0</span> <span class="unit">sec</span>
+                        </label>
+                        <input type="range" id="tmaxSlider" min="0" max="10" value="0" step="0.5">
+                    </div>
+
+                    <div class="slider-container">
+                        <label for="modelSelect">Residue Model</label>
+                        <select id="modelSelect"
+                            style="width: 100%; padding: 8px; background: #333; color: #fff; border: 1px solid #555; border-radius: 4px;">
+                            <option value="boxcar">Boxcar (Plug Flow)</option>
+                            <option value="exponential">Exponential (Perfect Mixing)</option>
+                        </select>
+                    </div>
+
+                    <div class="info-box">
+                        <h3>Derived Parameter</h3>
+                        <p>CBV = CBF × MTT</p>
+                        <p class="derived-value"><span id="cbvValue">3.33</span> <span class="unit">ml/100g</span></p>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <h2>Systemic Parameters</h2>
+                    <div class="slider-container">
+                        <label for="cardiacOutputSlider">
+                            Cardiac Output
+                            <span class="value-display" id="cardiacOutputValue">5.0</span> <span class="unit">L/min</span>
+                        </label>
+                        <input type="range" id="cardiacOutputSlider" min="2.0" max="8.0" value="5.0" step="0.2">
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <h2>Simulation Settings</h2>
+                    <div class="slider-container">
+                        <label for="noiseSlider">
+                            Noise Level
+                            <span class="value-display" id="noiseValue">0</span> <span class="unit">%</span>
+                        </label>
+                        <input type="range" id="noiseSlider" min="0" max="20" value="0" step="1">
+                    </div>
+                </div>
+
+                <div class="explanation">
+                    <h3>Concept</h3>
+                    <p><strong>Convolution:</strong> The tissue concentration curve $C_t(t)$ is the convolution of the
+                        Arterial Input Function (AIF) and the Residue Function $R(t)$, scaled by CBF.</p>
+                    <div class="formula">
+                        $$C_t(t) = CBF \cdot [AIF(t) \otimes R(t)]$$
+                    </div>
+                </div>
+            </aside>
+
+            <section class="charts">
+                <div class="chart-card">
+                    <div class="chart-header">
+                        <h3>Arterial Input Function (AIF)</h3>
+                        <span class="badge aif-badge">Input</span>
+                    </div>
+                    <div class="canvas-container">
+                        <canvas id="aifChart"></canvas>
+                    </div>
+                </div>
+
+                <div class="chart-card">
+                    <div class="chart-header">
+                        <h3>Tissue Concentration Curve C_t(t)</h3>
+                        <span class="badge tissue-badge">Output</span>
+                    </div>
+                    <div class="canvas-container">
+                        <canvas id="tissueChart"></canvas>
+                    </div>
+                </div>
+
+                <div class="chart-card large">
+                    <div class="chart-header">
+                        <h3>Impulse Response Function (IRF)</h3>
+                        <span class="badge residue-badge">CBF · R(t)</span>
+                    </div>
+                    <div class="canvas-container">
+                        <canvas id="residueChart"></canvas>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>Jinhee Jang, MD. PhD, Neuroradiology Section, Department of Radiology, Seoul St. Mary Hospital</p>
+        </footer>
+    </div>
+
+    <!-- MathJax for formula rendering -->
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="script.js"></script>
+</body>
+
+</html>

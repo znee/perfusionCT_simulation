@@ -38,7 +38,7 @@ The app will automatically open at `http://localhost:8000`
 Press `Ctrl+C` in the terminal
 
 ### GitHub Pages
-Visit the live demo at your GitHub Pages URL.
+Visit the live demo at: **https://znee.github.io/perfusionCT_simulation/**
 
 ## Physiological Parameters
 

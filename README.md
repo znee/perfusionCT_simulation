@@ -53,7 +53,7 @@ Visit the live demo at: **https://znee.github.io/perfusionCT_simulation/**
 - Represents average time for blood to traverse tissue capillary bed
 
 ### Tmax (Delay)
-- Range: 0-10 seconds
+- Range: 0-15 seconds
 - Arterial-tissue delay (time from AIF peak to tissue peak)
 
 ### Cardiac Output
@@ -72,8 +72,10 @@ Where:
 - `CBF`: Cerebral blood flow (ml/100g/min) → divided by 60 for per-second units
 - `dt`: Time resolution (1 second)
 - `AIF(t)`: Arterial Input Function (gamma-variate, ~200 HU peak)
-- `R(t)`: Residue function (unitless, 0-1)
+- `R(t)`: Residue function, **shifted by Tmax** for forward model
 - `⊗`: Convolution operator
+
+**Important**: Tmax is applied to the residue function, not the AIF. This ensures the forward and inverse problems represent the same physical system.
 
 ### Tissue Concentration Scaling Factor (0.1)
 
@@ -107,7 +109,8 @@ This brings tissue concentration to the **realistic 20-60 HU range** for typical
 ### Other Key Features
 
 **Canonical Residue Function**: R(0) = 1, no intrinsic delay
-- Delay (Tmax) applied by shifting AIF in convolution
+- **Tmax applied to residue**: Forward model uses `R(t - Tmax)` to generate tissue curve
+- This ensures the matrix `A` (built from unshifted AIF) and the tissue curve `b` represent the same system
 - Educational: "Ideal IRF" shows canonical response, "Shifted IRF" shows delayed tissue response
 
 **Fractional Tmax Support**: Linear interpolation for sub-second delays (e.g., 0.5s)
@@ -164,9 +167,27 @@ The tool offers two modes to demonstrate the impact of arterial delay (Tmax) on 
     - **Educational Value**: Demonstrates why delay correction is critical in perfusion analysis.
 
 2.  **Delay-Insensitive (Block-Circulant)**:
-    - Uses a block-circulant matrix (assuming periodic boundary conditions).
-    - **Behavior**: The circular structure allows the IRF to shift in time without penalty. It correctly recovers the true CBF height regardless of Tmax delay.
-    - **Educational Value**: Represents modern "delay-insensitive" or "oscillatory" SVD algorithms used in clinical software.
+    - Uses a block-circulant matrix with wrapped causal tail.
+    - **Formula**: Lower triangle uses standard Toeplitz `A[i][j] = aif[i-j]`; upper triangle wraps `A[i][j] = aif[(i-j+N) % N]`
+    - **Behavior**: Allows the IRF to shift beyond the acquisition window, correctly recovering CBF, CBV, Tmax, and MTT even when arterial delay is present.
+    - **Educational Value**: Represents modern "delay-insensitive" or "oscillatory" SVD algorithms (oSVD) used in clinical software.
+
+### Technical Implementation Notes
+
+**Forward Model Consistency**:
+- The forward problem generates tissue using `C_t = AIF ⊗ R_shifted`
+- The inverse problem solves `A·x = C_t` where `A` is built from the **same unshifted AIF**
+- This ensures mathematical consistency between forward and inverse operations
+
+**Pure Tikhonov Regularization**:
+- No hard truncation of singular values
+- Damping formula: `S_inv[i] = S[i] / (S[i]² + (λ·S_max)²)`
+- Default λ = 0.05 matches clinical perfusion software (typical range: 0.03-0.08)
+
+**Noisy AIF for Deconvolution**:
+- Both tissue curve AND AIF receive noise (when noise > 0%)
+- The noisy AIF is used to build the deconvolution matrix
+- Simulates real-world instability where both signals are corrupted
 
 ### Regularization Parameter (λ)
 

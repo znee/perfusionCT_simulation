@@ -62,12 +62,6 @@
                             <option value="exponential" selected>Exponential (Perfect Mixing)</option>
                         </select>
                     </div>
-
-                    <div class="info-box">
-                        <h3>Derived Parameter</h3>
-                        <p>CBV = CBF × MTT</p>
-                        <p class="derived-value"><span id="cbvValue">3.33</span> <span class="unit">ml/100g</span></p>
-                    </div>
                 </div>
 
                 <div class="control-group">
@@ -125,6 +119,12 @@
                     <p><strong>Forward Problem (Convolution):</strong> $C_t(t) = CBF \cdot [AIF(t) \otimes R(t)]$</p>
                     <p><strong>Inverse Problem (Deconvolution):</strong> $R(t) = \text{deconv}(C_t(t), AIF(t))$</p>
                     <p style="font-size: 0.85rem; margin-top: 8px;">Derive CBF, CBV, MTT from deconvolved $R(t)$</p>
+
+                    <div class="info-box" style="margin-top: 12px;">
+                        <h3>Derived Parameter</h3>
+                        <p>CBV = CBF × MTT</p>
+                        <p class="derived-value"><span id="cbvValue">3.33</span> <span class="unit">ml/100g</span></p>
+                    </div>
                 </div>
             </aside>
 
@@ -211,7 +211,7 @@
     <script src="numeric.min.js"></script>
 
     <!-- Load our main script AFTER numeric.js is available -->
-    <script src="script.js?v=11"></script>
+    <script src="script.js?v=14"></script>
 
     <!-- MathJax Configuration -->
     <script>

@@ -520,7 +520,8 @@ document.addEventListener('DOMContentLoaded', () => {
             y: {
                 grid: { color: '#333' },
                 ticks: { color: '#888' },
-                beginAtZero: true
+                beginAtZero: true,
+                grace: '10%'
             }
         }
     };
